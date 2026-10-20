@@ -1,0 +1,26 @@
+name: Verify
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run format:check
+      - run: npm test
+      - run: npm run schema && git diff --exit-code docs/mcp-tools.json
+      - run: docker build -t docker-browser-mcp:0.1.0 .
+      - run: docker run -d --init --name docker-browser-mcp --shm-size=1g docker-browser-mcp:0.1.0
+      - run: npm run smoke -- --docker
+      - if: always()
+        run: docker logs docker-browser-mcp || true
+      - if: always()
+        run: docker rm -f docker-browser-mcp || true

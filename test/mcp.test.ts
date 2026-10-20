@@ -1,0 +1,87 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdtemp, rm, access } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+
+test('MCP stdio discovery, operation lookup, artifact transfer, reconnect and principal isolation', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'mcp-protocol-'));
+  const socket = join(dir, 'service.sock');
+  const env = { ...process.env, DATA_DIR: dir, MCP_SOCKET: socket };
+  const daemon = spawn(process.execPath, ['dist/cli.js', 'daemon'], {
+    env,
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  let logs = '';
+  daemon.stderr.on('data', (x) => (logs += x));
+  const connect = async (owner: string) => {
+    const c = new Client({ name: 'test', version: '1.0.0' });
+    await c.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ['dist/cli.js', 'stdio'],
+        env: { ...env, MCP_PRINCIPAL: owner } as Record<string, string>,
+      }),
+    );
+    return c;
+  };
+  let a: Client | undefined, b: Client | undefined;
+  try {
+    let ready = false;
+    for (let n = 0; n < 100; n++) {
+      try {
+        await access(socket);
+        ready = true;
+        break;
+      } catch {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    assert.ok(ready, logs);
+    a = await connect('alice');
+    const tools = await a.listTools();
+    assert.equal(tools.tools.length, 24);
+    const call = async (c: Client, name: string, args: any = {}) => {
+      const r: any = await c.callTool({ name, arguments: args });
+      return JSON.parse(r.content[0].text);
+    };
+    const created = await call(a, 'create_instance', { viewport: { width: 390, height: 844 } });
+    assert.equal(created.status, 'succeeded');
+    const i = created.data.instance_id;
+    const op = await call(a, 'get_operation', { operation_id: created.operation_id });
+    assert.equal(op.data.data.instance_id, i);
+    const recent = await call(a, 'list_operations', {});
+    assert.ok(recent.data.some((x: any) => x.operation_id === created.operation_id));
+    const put = await call(a, 'put_artifact', {
+      name: 'test.txt',
+      data_base64: Buffer.from('authorized upload').toString('base64'),
+    });
+    assert.equal(put.status, 'succeeded');
+    const get = await call(a, 'get_artifact', { artifact_id: put.data.id });
+    assert.equal(Buffer.from(get.data.data_base64, 'base64').toString(), 'authorized upload');
+    await a.close();
+    a = await connect('alice');
+    assert.equal((await call(a, 'list_instances')).data[0].instance_id, i);
+    b = await connect('bob');
+    assert.deepEqual((await call(b, 'list_instances')).data, []);
+    assert.equal(
+      (await call(b, 'get_artifact', { artifact_id: put.data.id })).error.code,
+      'ARTIFACT_NOT_FOUND',
+    );
+    assert.equal(
+      (await call(b, 'get_operation', { operation_id: created.operation_id })).error.code,
+      'OPERATION_NOT_FOUND',
+    );
+    assert.equal((await call(a, 'close_instance', { instance_id: i })).status, 'succeeded');
+  } finally {
+    await a?.close();
+    await b?.close();
+    const ended = new Promise<void>((r) => daemon.once('exit', () => r()));
+    daemon.kill('SIGTERM');
+    await ended;
+    await rm(dir, { recursive: true, force: true });
+  }
+});

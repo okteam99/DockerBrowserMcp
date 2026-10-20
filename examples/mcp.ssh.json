@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "docker-browser": {
+      "command": "ssh",
+      "args": ["-T", "-o", "BatchMode=yes", "browser-host", "docker", "exec", "-i", "-e", "MCP_PRINCIPAL=agent-main", "docker-browser-mcp", "node", "dist/cli.js", "stdio"]
+    }
+  }
+}

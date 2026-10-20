@@ -1,0 +1,4 @@
+{
+  "us": { "server": "socks5://proxy-us.example.com:1080", "username": "replace-me", "password": "replace-me", "country": "US" },
+  "jp": { "server": "http://proxy-jp.example.com:8080", "username": "replace-me", "password": "replace-me", "country": "JP" }
+}
