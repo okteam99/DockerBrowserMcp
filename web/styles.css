@@ -730,6 +730,8 @@ input {
   color: #263650;
 }
 .markdown-body pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   padding: 20px;
   background: #f5f7fb;
   border: 1px solid #e4eaf4;
@@ -747,7 +749,8 @@ input {
 .markdown-body pre code {
   background: none;
   padding: 0;
-  overflow-wrap: normal;
+  white-space: inherit;
+  overflow-wrap: anywhere;
 }
 .markdown-body table {
   border-collapse: collapse;

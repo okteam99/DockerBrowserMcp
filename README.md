@@ -1,15 +1,24 @@
 # DockerBrowserMcp
 
-部署一个远程浏览器服务：**打开网页、输入密码、复制自动生成的 MCP 接入说明给 Agent，即可开始操作浏览器。** 网页还能观看实例直播和历史录像。
+**让 AI 操作浏览器，实时直播、全程录屏，操作过程看得见。** 通过 MCP 将远程浏览器接入 AI Agent；打开控制台、输入访问密码，即可复制完整接入说明。
 
-实例创建时可指定 UA、页面视口、HTTP/SOCKS5 鉴权代理、语言与时区；支持点击、输入、iframe、多标签页、上传下载、截图及诊断。不绑定 AON 或其他业务网站。
+实例创建时可指定 UA、页面视口、HTTP/SOCKS5 鉴权代理、语言与时区；支持点击、输入、iframe、多标签页、上传下载、截图及诊断。
 
-## 一行部署
+## 快速部署
 
-把 `<年月日时分秒标签>` 换成发布脚本输出的标签，修改 BASE_URL 和密码：
+以下命令使用已发布的实际镜像版本。先将 `WEB_PASSWORD` 改为自己的密码；本地部署后访问 `http://localhost:8080`。部署到远程服务器时，将 `BASE_URL` 改为实际访问地址：
 
 ```sh
-docker run -d --init --name docker-browser-mcp --restart unless-stopped --shm-size=1g -p 8080:8080 -e BASE_URL=https://browser.example.com -e WEB_PASSWORD='替换为你的强密码' -v browser-mcp-data:/data bdpgogoup/dockerbrowsermcp:<年月日时分秒标签>
+docker run -d --init \
+  --name docker-browser-mcp \
+  --restart unless-stopped \
+  --shm-size=1g \
+  -p 8080:8080 \
+  -e BASE_URL=http://localhost:8080 \
+  -e WEB_PASSWORD='替换为你的强密码' \
+  -e MAX_INSTANCES=10 \
+  -v browser-mcp-data:/data \
+  bdpgogoup/dockerbrowsermcp:20261020203319
 ```
 
 `BASE_URL` 是用户或 Agent 实际访问的外网地址；由部署方确保 DNS、反向代理、HTTPS 或端口映射已接通容器 8080。服务不会自动申请证书或创建隧道。本机试用可用 `BASE_URL=http://localhost:8080`。
@@ -166,15 +175,15 @@ docker login --username bdpgogoup
 bash scripts/publish-docker.sh
 ```
 
-可通过 `DOCKERHUB_TOKEN` 环境变量让脚本自动以 bdpgogoup 登录，Token 使用 password-stdin，不打印。支持 `PLATFORMS`、`RELEASE_TZ` 和 `RELEASE_TAG`（14位时间标签）覆盖。脚本依赖 Docker Buildx；不在代码或镜像中保存账号密码。成功后输出镜像名和一行部署命令。
+可通过 `DOCKERHUB_TOKEN` 环境变量让脚本自动以 bdpgogoup 登录，Token 使用 password-stdin，不打印。支持 `PLATFORMS`、`RELEASE_TZ` 和 `RELEASE_TAG`（14位时间标签）覆盖。脚本依赖 Docker Buildx；不在代码或镜像中保存账号密码。发布时自动将 README 部署示例更新为本次实际 tag，成功后输出镜像名和可复制的分行部署命令；发布失败时恢复原 tag。
 
 ## 源码构建及 stdio 接入
 
 ```sh
-docker build -t docker-browser-mcp:0.3.0 .
+docker build -t docker-browser-mcp:0.3.1 .
 ```
 
-将一行部署命令最后的镜像名换成 `docker-browser-mcp:0.3.0` 即可本地使用。
+将一行部署命令最后的镜像名换成 `docker-browser-mcp:0.3.1` 即可本地使用。
 
 兼容配置见 [本地 stdio](examples/mcp.local.json)、[SSH stdio](examples/mcp.ssh.json)。仍使用 `docker exec -i`，不得使用 `-t`。MCP_PRINCIPAL 是可信 SSH/Docker 接入中的命名空间，不是独立认证。
 

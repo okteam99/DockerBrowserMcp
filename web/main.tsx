@@ -111,33 +111,33 @@ function Login() {
         <Brand light />
         <div className="login-intro">
           <Tag icon={<ThunderboltOutlined />} bordered={false}>
-            为 Agent 提供浏览器能力
+            AI 浏览器 · 直播与录屏
           </Tag>
           <h1>
-            让浏览器工作，
+            AI 操作浏览器，
             <br />
-            让过程看得见。
+            全过程看得见。
           </h1>
-          <p>一个入口，连接远程浏览器、实时画面与执行记录。</p>
+          <p>实时直播 AI 的操作过程，全程录屏，随时回放。</p>
           <div className="login-capabilities">
             <div>
               <ApiOutlined />
-              <strong>即刻接入</strong>
-              <span>复制配置，交给 Agent</span>
+              <strong>AI 操作</strong>
+              <span>通过 MCP 接入你的 AI Agent</span>
             </div>
             <div>
               <VideoCameraOutlined />
-              <strong>实时可见</strong>
-              <span>查看正在运行的实例</span>
+              <strong>实时直播</strong>
+              <span>实时查看 AI 的每一步操作</span>
             </div>
             <div>
               <HistoryOutlined />
-              <strong>随时回看</strong>
-              <span>保留每一次执行记录</span>
+              <strong>全程录屏</strong>
+              <span>自动录制会话，随时回看过程</span>
             </div>
           </div>
         </div>
-        <Text className="login-story-footer">远程执行 · 独立会话 · 全程可观察</Text>
+        <Text className="login-story-footer">AI 操作 · 实时直播 · 全程录屏</Text>
       </section>
       <section className="login-form-side">
         <div className="login-card">

@@ -150,10 +150,20 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
 
       await page.getByRole('menuitem', { name: '使用文档' }).click();
       await page.locator('.markdown-body').waitFor();
+      const deployment = page.locator('.markdown-body pre').first();
+      assert.match(await deployment.innerText(), /bdpgogoup\/dockerbrowsermcp:\d{14}/);
+      assert.ok(
+        (await deployment.innerText()).split('\n').length > 5,
+        'Deployment command should use readable shell continuations',
+      );
       await page.setViewportSize({ width: 390, height: 844 });
       assert.ok(
         await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
         'Mobile layout must not overflow horizontally',
+      );
+      assert.ok(
+        await deployment.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
+        'Deployment command must wrap without horizontal clipping',
       );
       await page.getByRole('button', { name: '打开导航' }).click();
       await page.getByRole('menuitem', { name: '实时实例' }).click();

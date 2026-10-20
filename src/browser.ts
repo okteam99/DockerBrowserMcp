@@ -439,7 +439,7 @@ export class BrowserManager {
     if (name === 'health')
       return {
         status: 'ok',
-        version: '0.3.0',
+        version: '0.3.1',
         instances: this.instances.size,
         max_instances: this.cfg.maxInstances,
       };

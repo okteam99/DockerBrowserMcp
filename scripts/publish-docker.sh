@@ -25,7 +25,41 @@ fi
 if [[ -n "${DOCKERHUB_TOKEN:-}" ]]; then
   printf '%s' "$DOCKERHUB_TOKEN" | docker login --username bdpgogoup --password-stdin
 fi
+# Pin the README inside the image to this release. Roll back an ordinary failed push.
+readme_file="$repo_dir/README.md"
+readme_backup="$(mktemp)"
+readme_expected="$(mktemp)"
+cp "$readme_file" "$readme_backup"
+sed -E "s#bdpgogoup/dockerbrowsermcp:[0-9]{14}#$image:$tag#g" "$readme_backup" > "$readme_expected"
+cp "$readme_expected" "$readme_file"
+published=false
+finish() {
+  result=$?
+  if ! "$published"; then
+    if cmp -s "$readme_file" "$readme_expected"; then
+      cp "$readme_backup" "$readme_file"
+    else
+      printf '%s\n' 'README changed during release; automatic rollback skipped to preserve edits.' >&2
+    fi
+  fi
+  rm -f "$readme_backup" "$readme_expected"
+  exit "$result"
+}
+trap finish EXIT
 # No token provided: use docker login credentials already held by Docker.
 "${command[@]}"
+published=true
 printf '\nPublished: %s:%s\n' "$image" "$tag"
-printf 'docker run -d --init --name docker-browser-mcp --restart unless-stopped --shm-size=1g -p 8080:8080 -e BASE_URL=https://browser.example.com -e WEB_PASSWORD=CHANGE_ME -v browser-mcp-data:/data %s:%s\n' "$image" "$tag"
+printf 'README deployment tag updated to %s\n\n' "$tag"
+cat <<'DEPLOY'
+docker run -d --init \
+  --name docker-browser-mcp \
+  --restart unless-stopped \
+  --shm-size=1g \
+  -p 8080:8080 \
+  -e BASE_URL=http://localhost:8080 \
+  -e WEB_PASSWORD=CHANGE_ME \
+  -e MAX_INSTANCES=10 \
+  -v browser-mcp-data:/data \
+DEPLOY
+printf '  %s:%s\n' "$image" "$tag"
