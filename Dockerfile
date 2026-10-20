@@ -1,8 +1,10 @@
 FROM node:22-bookworm-slim AS build
 WORKDIR /app
-COPY package.json package-lock.json tsconfig.json ./
+COPY package.json package-lock.json tsconfig.json tsconfig.web.json ./
 RUN npm ci
 COPY src ./src
+COPY web ./web
+COPY scripts/build-web.mjs ./scripts/build-web.mjs
 RUN npm run build && npm prune --omit=dev
 
 FROM mcr.microsoft.com/playwright:v1.64.1-noble

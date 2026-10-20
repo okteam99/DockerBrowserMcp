@@ -6,7 +6,7 @@ const base = process.env.PREVIEW_BASE_URL ?? 'http://127.0.0.1:8765';
 const password = process.env.PREVIEW_PASSWORD;
 if (!password) throw Error('PREVIEW_PASSWORD required');
 const fixture = http.createServer((_req, res) => {
-  res.setHeader('content-type', 'text/html');
+  res.setHeader('content-type', 'text/html; charset=utf-8');
   res.end(
     '<meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;background:#e8f2ff;font:18px system-ui;padding:30px;color:#13305c}h1{font-size:32px}button{padding:15px;border:0;border-radius:8px;background:#255cbb;color:white}article{background:white;border-radius:15px;padding:25px;margin-top:25px}</style><h1>Browser session</h1><p>Live page controlled through authenticated MCP</p><article><strong>Mobile viewport · 390 × 844</strong><p>HTTP transport connected. Video sampling at 2 FPS.</p><button onclick="this.textContent=\'Action completed\'">Run sample action</button></article>',
   );

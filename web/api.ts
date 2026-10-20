@@ -1,0 +1,84 @@
+export type Bootstrap = {
+  base: string;
+  screen: 'login' | 'dashboard';
+  error: string;
+  csrf: string;
+};
+export type Connection = {
+  base_url: string;
+  mcp_url: string;
+  agent_instructions: string;
+  mcp_config: {
+    mcpServers: Record<string, { type: string; url: string; headers: { Authorization: string } }>;
+  };
+  tool_count: number;
+  max_instances: number;
+};
+export type BrowserInstance = {
+  instance_id: string;
+  status: string;
+  owner: string;
+  created_at: string;
+  viewport: { width: number; height: number };
+  user_agent: string;
+  locale: string;
+  timezone: string;
+  active_page_id?: string;
+  proxy: { server: string; authenticated: boolean } | null;
+  pages: { page_id: string; url: string }[];
+};
+export type Recording = {
+  id: string;
+  instance_id: string;
+  owner: string;
+  created_at: string;
+  ended_at?: string;
+  status: string;
+  frames: number;
+  fps: number;
+  width: number;
+  height: number;
+  bytes: number;
+  error?: string;
+};
+export const bootstrap: Bootstrap = JSON.parse(document.getElementById('bootstrap')!.textContent!);
+export async function api<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(bootstrap.base + path, { cache: 'no-store', signal });
+  if (response.status === 401) {
+    window.location.assign(bootstrap.base + '/');
+    throw Error('登录已过期，请重新登录');
+  }
+  if (!response.ok) throw Error(`暂时无法获取数据（${response.status}），请稍后刷新`);
+  return response.json() as Promise<T>;
+}
+export async function copyText(value: string) {
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch {
+    const area = document.createElement('textarea');
+    area.value = value;
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.append(area);
+    area.select();
+    const copied = document.execCommand('copy');
+    area.remove();
+    if (!copied) throw Error('浏览器不允许自动复制，请在详情中手动复制');
+  }
+}
+export const compactId = (id: string) => id.replace(/^(ins_|rec_)/, '').slice(0, 8);
+export const displayTime = (value: string) =>
+  new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(new Date(value));
+export const fileSize = (bytes: number) =>
+  bytes >= 1048576
+    ? `${(bytes / 1048576).toFixed(1)} MB`
+    : bytes >= 1024
+      ? `${(bytes / 1024).toFixed(1)} KB`
+      : `${bytes} B`;

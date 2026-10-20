@@ -21,6 +21,8 @@ docker run -d --init --name docker-browser-mcp --restart unless-stopped --shm-si
 3. Agent 配置远程 MCP 后，先调用 `health`，再创建和控制浏览器实例。
 4. 在网页“实时实例”中选择实例观看直播；关闭实例后，在“历史录屏”播放录像。
 
+控制台使用 React + Ant Design，包含工作台、实时实例、历史录屏、MCP 接入和文档中心，并适配手机屏幕。所有前端资源随镜像打包，不依赖外部 CDN。
+
 不需要 SSH 配置或 Chrome 插件。原 stdio / SSH 接入方式仍保留。
 
 ## MCP 地址与鉴权
@@ -169,14 +171,16 @@ bash scripts/publish-docker.sh
 ## 源码构建及 stdio 接入
 
 ```sh
-docker build -t docker-browser-mcp:0.2.0 .
+docker build -t docker-browser-mcp:0.3.0 .
 ```
 
-将一行部署命令最后的镜像名换成 `docker-browser-mcp:0.2.0` 即可本地使用。
+将一行部署命令最后的镜像名换成 `docker-browser-mcp:0.3.0` 即可本地使用。
 
 兼容配置见 [本地 stdio](examples/mcp.local.json)、[SSH stdio](examples/mcp.ssh.json)。仍使用 `docker exec -i`，不得使用 `-t`。MCP_PRINCIPAL 是可信 SSH/Docker 接入中的命名空间，不是独立认证。
 
 ## 开发与验证
+
+前端源码位于 `web/`，使用 React + Ant Design。`npm run build` 同时进行类型检查、构建服务端和打包前端（含 gzip 资源）；Docker 镜像只需运行编译产物。
 
 需要 Node.js 22+、FFmpeg，以及 Playwright Chromium：
 

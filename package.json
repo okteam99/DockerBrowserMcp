@@ -1,22 +1,24 @@
 {
   "name": "docker-browser-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "npm run build:server && npm run build:web",
     "start": "node dist/cli.js",
     "test": "npm run build && tsx --test test/*.test.ts",
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && tsc -p tsconfig.web.json",
     "smoke": "tsx scripts/smoke.ts",
     "schema": "npm run build && tsx scripts/export-schema.ts",
-    "format": "prettier --write src test scripts",
-    "format:check": "prettier --check src test scripts",
+    "format": "prettier --write src web test scripts",
+    "format:check": "prettier --check src web test scripts",
     "release": "bash scripts/publish-docker.sh",
-    "smoke:http": "tsx scripts/smoke-http.ts"
+    "smoke:http": "tsx scripts/smoke-http.ts",
+    "build:server": "tsc",
+    "build:web": "tsc -p tsconfig.web.json && node scripts/build-web.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
@@ -27,8 +29,17 @@
     "zod": "3.25.76"
   },
   "devDependencies": {
+    "@ant-design/icons": "6.3.4",
     "@types/node": "22.19.11",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "antd": "6.6.7",
+    "esbuild": "0.28.2",
     "prettier": "3.9.10",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
     "tsx": "4.23.15",
     "typescript": "5.9.3"
   }

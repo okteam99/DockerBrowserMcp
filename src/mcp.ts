@@ -10,7 +10,7 @@ export type Dispatch = (
   operationId: string,
 ) => Promise<any>;
 export function createMcpServer(owner: string, call: Dispatch) {
-  const server = new McpServer({ name: 'docker-browser-mcp', version: '0.2.0' });
+  const server = new McpServer({ name: 'docker-browser-mcp', version: '0.3.0' });
   for (const [name, d] of Object.entries(definitions)) {
     // SDK accepts ZodEffects; raw shape would discard cross-field validation.
     server.registerTool(

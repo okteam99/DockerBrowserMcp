@@ -61,7 +61,7 @@ export async function startWeb(manager: BrowserManager, cfg: Config, dispatch: D
     res.setHeader('referrer-policy', 'same-origin');
     res.setHeader(
       'content-security-policy',
-      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self'; media-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; media-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     );
     let requestUrl: URL;
     try {
@@ -81,8 +81,30 @@ export async function startWeb(manager: BrowserManager, cfg: Config, dispatch: D
         json(res, { error: 'Origin not allowed' }, 403);
         return;
       }
+      if (path.startsWith('/assets/') && req.method === 'GET') {
+        const files: Record<string, string> = {
+          '/assets/app.js': 'application/javascript; charset=utf-8',
+          '/assets/app.css': 'text/css; charset=utf-8',
+        };
+        const mime = Object.hasOwn(files, path) ? files[path] : undefined;
+        if (!mime) {
+          json(res, { error: 'Not found' }, 404);
+          return;
+        }
+        const gzip = (req.headers['accept-encoding'] ?? '')
+          .split(',')
+          .some((part) => /^gzip(?:;q=(?!0(?:\.0*)?$)[\d.]+)?$/.test(part.trim()));
+        const content = await readFile(
+          fileURLToPath(new URL(`./public/${path.slice(8)}${gzip ? '.gz' : ''}`, import.meta.url)),
+        );
+        res.setHeader('vary', 'Accept-Encoding');
+        if (gzip) res.setHeader('content-encoding', 'gzip');
+        res.setHeader('content-type', mime);
+        res.end(content);
+        return;
+      }
       if (path === '/healthz') {
-        json(res, { status: 'ok', version: '0.2.0' });
+        json(res, { status: 'ok', version: '0.3.0' });
         return;
       }
       if (path === '/mcp') {

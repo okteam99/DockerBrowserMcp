@@ -9,7 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { WebAuth } from '../src/auth.js';
 import { config } from '../src/config.js';
-import { chromium } from 'playwright';
+import { chromium, type Browser } from 'playwright';
 
 const freePort = async () => {
   const s = http.createServer();
@@ -88,6 +88,7 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
   };
   let proc = await start();
   let client: Client | undefined;
+  let viewer: Browser | undefined;
   try {
     const invalid = await new Promise<number>((resolve) => {
       const req = http.request({ host: '127.0.0.1', port, path: 'http://[' }, (res) => {
@@ -120,22 +121,43 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
     assert.equal(login.status, 303);
     const cookie = login.headers.get('set-cookie')!.split(';')[0];
     const headers = { Cookie: cookie };
-    assert.match(await (await fetch(base + '/', { headers })).text(), /复制完整 Agent 接入说明/);
+    assert.match(await (await fetch(base + '/', { headers })).text(), /正在加载浏览器控制台/);
+    assert.equal((await fetch(base + '/assets/app.js')).status, 200);
+    assert.equal((await fetch(base + '/assets/app.css')).status, 200);
+    assert.equal((await fetch(base + '/assets/not-found.js')).status, 404);
     const browser = await chromium.launch({ headless: true });
     try {
       const page = await browser.newPage();
       page.setDefaultTimeout(5000);
       await page.goto(base + '/');
       await page.getByLabel('访问密码').fill('test-password-123');
-      await page.getByRole('button', { name: '登录', exact: true }).click();
+      await page.getByRole('button', { name: /^登\s*录$/, exact: true }).click();
       await page
         .getByRole('button', { name: '复制完整 Agent 接入说明' })
         .waitFor({ timeout: 5000 });
-      await page.waitForFunction(
-        () => document.getElementById('config')?.textContent?.includes('Bearer '),
-        undefined,
-        { timeout: 5000 },
+      await page.getByRole('menuitem', { name: 'MCP 接入' }).click();
+      await page.getByLabel('MCP 地址', { exact: true }).waitFor();
+      assert.equal(await page.getByLabel('MCP 地址', { exact: true }).inputValue(), base + '/mcp');
+      assert.ok(
+        (await page.locator('#config').innerText()).includes('••••••••'),
+        'Token should be masked by default',
       );
+      await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+      await page.getByRole('button', { name: '复制 MCP 配置' }).click();
+      const copied = JSON.parse(await page.evaluate(() => navigator.clipboard.readText()));
+      assert.equal(copied.mcpServers['docker-browser'].url, base + '/mcp');
+      assert.match(copied.mcpServers['docker-browser'].headers.Authorization, /^Bearer [\w-]+$/);
+
+      await page.getByRole('menuitem', { name: '使用文档' }).click();
+      await page.locator('.markdown-body').waitFor();
+      await page.setViewportSize({ width: 390, height: 844 });
+      assert.ok(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
+        'Mobile layout must not overflow horizontally',
+      );
+      await page.getByRole('button', { name: '打开导航' }).click();
+      await page.getByRole('menuitem', { name: '实时实例' }).click();
+      await page.getByText('选择一个实例开始观看', { exact: true }).waitFor();
     } finally {
       await browser.close();
     }
@@ -177,6 +199,24 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
     assert.equal((await call('create_instance')).error.code, 'INSTANCE_LIMIT');
     await call('navigate', { ...ids, url: fixtureUrl });
     await call('interact', { ...ids, action: 'click', target: { role: 'button', name: 'Change' } });
+    viewer = await chromium.launch({ headless: true });
+    const viewerContext = await viewer.newContext({ viewport: { width: 1280, height: 900 } });
+    await viewerContext.addCookies([
+      { name: 'browser_session', value: cookie.split('=')[1], url: base + '/' },
+    ]);
+    const viewerPage = await viewerContext.newPage();
+    viewerPage.setDefaultTimeout(10000);
+    await viewerPage.goto(base + '/#instances');
+    await viewerPage.getByRole('button', { name: /^观看实例/ }).click();
+    await viewerPage.waitForFunction(
+      () => {
+        const image = document.querySelector('.live-image') as HTMLImageElement;
+        return image?.naturalWidth > 0 && getComputedStyle(image).visibility === 'visible';
+      },
+      undefined,
+      { timeout: 10000 },
+    );
+
     const api: any = await (await fetch(base + '/api/instances', { headers })).json();
     assert.equal(api.instances[0].instance_id, id);
     const abort = new AbortController();
@@ -225,6 +265,20 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
     assert.equal(part.status, 206);
     assert.equal(Buffer.from(await part.arrayBuffer()).toString('hex'), '1a45dfa3');
     assert.equal((await call('list_recordings')).data[0].id, history[0].id);
+
+    await viewerPage.getByRole('menuitem', { name: '历史录屏' }).click();
+    await viewerPage.getByRole('button', { name: '播放录像' }).click();
+    await viewerPage.getByLabel('历史录像播放器').waitFor();
+    await viewerPage.waitForFunction(
+      () => {
+        const video = document.querySelector('video');
+        return video !== null && video.videoWidth > 0;
+      },
+      undefined,
+      { timeout: 10000 },
+    );
+    await viewer.close();
+    viewer = undefined;
     const recordingsBefore = history.length;
     await client.close();
     client = undefined;
@@ -241,6 +295,7 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
     const range = await fetch(playback, { headers: { ...auth, Range: 'bytes=999999999999-' } });
     assert.equal(range.status, 416);
   } finally {
+    await viewer?.close();
     await client?.close();
     await stop(proc);
     await new Promise<void>((r) => fixture.close(() => r()));
