@@ -315,7 +315,7 @@ function Dashboard() {
                 <span className="status-dot" />
                 远程浏览器服务
               </div>
-              <Text>DockerBrowserMcp · v0.4</Text>
+              <Text>DockerBrowserMcp · v0.5</Text>
             </div>
           </Layout.Sider>
         )}
@@ -871,12 +871,15 @@ function LiveViewer({ instance }: { instance?: BrowserInstance }) {
                 <span>预览暂时不可用，请重新选择实例</span>
               </div>
             )}
-            <img
+            <LiveImage
               key={instance.instance_id}
               className={loaded ? 'live-image' : 'live-image pending'}
-              src={`${bootstrap.base}/api/instances/${instance.instance_id}/live`}
+              src={`${bootstrap.base}/api/instances/${instance.instance_id}/frame`}
               alt="浏览器实例直播"
-              onLoad={() => setLoaded(true)}
+              onLoad={() => {
+                setLoaded(true);
+                setError(false);
+              }}
               onError={() => setError(true)}
             />
           </>
@@ -1336,6 +1339,36 @@ function DocsPage({ onConnect }: { onConnect: () => void }) {
     </Card>
   );
 }
+function LiveImage(props: {
+  src: string;
+  alt: string;
+  className?: string;
+  onLoad: () => void;
+  onError: () => void;
+}) {
+  const [frame, setFrame] = useState(0);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const next = (delay: number) => {
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setFrame((n) => n + 1), delay);
+  };
+  return (
+    <img
+      className={props.className}
+      alt={props.alt}
+      src={`${props.src}?frame=${frame}`}
+      onLoad={() => {
+        props.onLoad();
+        next(500);
+      }}
+      onError={() => {
+        props.onError();
+        next(1500);
+      }}
+    />
+  );
+}
 function PublicViewer() {
   const [view, setView] = useState(bootstrap.share);
   const [error, setError] = useState('');
@@ -1408,10 +1441,13 @@ function PublicViewer() {
           {active ? (
             view.kind === 'live' ? (
               <>
-                <img
-                  src={view.media_url}
+                <LiveImage
+                  src={view.frame_url!}
                   alt="浏览器实时画面"
-                  onLoad={() => setLoaded(true)}
+                  onLoad={() => {
+                    setLoaded(true);
+                    setError('');
+                  }}
                   onError={() => setError('直播暂时中断，请刷新重试')}
                 />
                 {!loaded && <Text className="public-viewer-waiting">正在连接直播画面…</Text>}

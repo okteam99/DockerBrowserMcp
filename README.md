@@ -6,7 +6,54 @@
 
 ## 快速部署
 
-以下命令使用已发布的实际镜像版本。先将 `WEB_PASSWORD` 改为自己的密码；本地部署后访问 `http://localhost:8080`。部署到远程服务器时，将 `BASE_URL` 改为实际访问地址：
+### 最少输入：只设密码，自动获得 HTTPS
+
+无需域名、Cloudflare 账号或端口映射。先改密码，再运行：
+
+```sh
+docker run -d --init \
+  --name docker-browser-mcp \
+  --restart unless-stopped \
+  --shm-size=1g \
+  -e WEB_PASSWORD='替换为你的强密码' \
+  -v browser-mcp-data:/data \
+  bdpgogoup/dockerbrowsermcp:20261020211603
+```
+
+查看自动生成的 HTTPS 地址：
+
+```sh
+docker logs docker-browser-mcp
+```
+
+日志中的 `Public HTTPS URL` 就是控制台地址。打开后输入密码，复制完整 MCP 接入说明。MCP 地址、直播及录屏分享地址全部自动使用该 HTTPS 地址。
+
+此模式使用匿名 Cloudflare Quick Tunnel；容器重新创建隧道后地址会变化，旧 MCP 和分享 URL 需更新。它适合试用和临时测试，没有可用性保证，最多200个进行中的请求，不支持 SSE。本服务 MCP 使用 JSON 响应，网页直播使用逐帧 JPEG 刷新。[Cloudflare 官方限制](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)
+
+### 固定 HTTPS：只增加一个 Tunnel Token
+
+先在 Cloudflare 创建一个命名隧道并添加自己的公开域名，服务目标填写 **HTTP → localhost:8080**，保存并复制该隧道的连接器 Token。首次绑定域名后，容器重启继续使用相同域名；子域名可以在首次配置时自行随机命名。
+
+部署时只需密码和 Token：
+
+```sh
+docker run -d --init \
+  --name docker-browser-mcp \
+  --restart unless-stopped \
+  --shm-size=1g \
+  -e WEB_PASSWORD='替换为你的强密码' \
+  -e CF_TUNNEL_TOKEN='替换为隧道的连接器Token' \
+  -v browser-mcp-data:/data \
+  bdpgogoup/dockerbrowsermcp:20261020211603
+```
+
+服务自动读取隧道配置，识别唯一指向本容器端口的域名，无需再填 `BASE_URL`。如果配置了多个符合条件的域名、通配符或路径规则，请增加 `-e BASE_URL=https://browser.example.com` 明确选择地址。只支持 Cloudflare 远程管理的命名隧道，不会代替用户购买域名或创建 DNS。
+
+Token 通过子进程环境传递，不出现在命令行参数、网页、MCP 返回值或普通日志中。Cloudflare 的连接器 Token 与本服务的 MCP Token 是两种独立凭据。
+
+### 已有域名或反向代理：指定 BASE_URL
+
+显式设置 `BASE_URL` 且不设置 `CF_TUNNEL_TOKEN` 时，使用部署方提供的地址，不启动内置隧道：
 
 ```sh
 docker run -d --init \
@@ -16,12 +63,11 @@ docker run -d --init \
   -p 8080:8080 \
   -e BASE_URL=http://localhost:8080 \
   -e WEB_PASSWORD='替换为你的强密码' \
-  -e MAX_INSTANCES=10 \
   -v browser-mcp-data:/data \
-  bdpgogoup/dockerbrowsermcp:20261020205051
+  bdpgogoup/dockerbrowsermcp:20261020211603
 ```
 
-`BASE_URL` 是用户或 Agent 实际访问的外网地址；由部署方确保 DNS、反向代理、HTTPS 或端口映射已接通容器 8080。服务不会自动申请证书或创建隧道。本机试用可用 `BASE_URL=http://localhost:8080`。
+部署到远程服务器时，将 `BASE_URL` 改为实际可访问地址；部署方负责 DNS、反向代理、HTTPS 或端口映射接通容器8080。`BASE_URL` 可带路径前缀。
 
 ### 使用步骤
 
@@ -104,7 +150,7 @@ Agent 必须支持远程 Streamable HTTP MCP 及自定义 Authorization 请求�
 | 历史录像总配额 | 1 GiB |
 | 保留时间 | 7 天 |
 
-直播使用 MJPEG，多个观看者共享同一份实例采样，不重复启动浏览器或截图任务。实例内新页面和最近操作的页面成为活动页面，直播和录像随之切换；不会同时录制所有标签页。
+控制台和公开观看页使用逐帧 JPEG 刷新（最多约2 FPS），兼容 Cloudflare 的流式缓冲。另保留 MJPEG 媒体接口供直接连接使用；多个观看者共享同一份实例采样，不重复启动浏览器或截图任务。实例内新页面和最近操作的页面成为活动页面，直播和录像随之切换；不会同时录制所有标签页。
 
 历史录像支持浏览器播放和 Range 请求。正常关闭实例会完成录像；异常终止会标记为 interrupted，残留文件不保证完整可播。达到单段大小上限后停止录像，直播仍可继续。采样或编码拥塞时可能丢帧，录像时长可能短于真实执行时长；这是低负载过程留证，不是精确时间审计。
 
@@ -126,7 +172,7 @@ Agent 可通过 MCP 创建无需登录的只读观看链接；链接使用 `BASE
 {"kind":"recording","recording_id":"rec_...","expires_in_seconds":86400}
 ```
 
-以上为 `create_share_link` 的 arguments。成功返回 `share_id`、`url`（观看页）、`media_url`（MJPEG 或 WebM）、`expires_at`。把 `url` 直接发给观看者即可，手机和桌面浏览器均可打开，录像支持播放、拖动和下载。
+以上为 `create_share_link` 的 arguments。成功返回 `share_id`、`url`（观看页）、`media_url`（MJPEG 或 WebM）、直播的 `frame_url`（单帧 JPEG）、`expires_at`。把 `url` 直接发给观看者即可，手机和桌面浏览器均可打开，录像支持播放、拖动和下载。
 
 - 有效期默认 24 小时，可设 1 秒至 30 天；最多 1000 个有效分享。
 - `list_share_links {}` 查询当前 principal 的分享元信息；链接秘密仅在创建结果中返回，可用该次 `get_operation` 找回尚未从内存淘汰的结果。
@@ -144,7 +190,11 @@ Agent 可通过 MCP 创建无需登录的只读观看链接；链接使用 `BASE
 
 | 环境变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `BASE_URL` | 必填 | 外网访问根地址，可包含路径前缀，如 https://host/browser |
+| `BASE_URL` | 自动识别 | 自定义外部地址；普通部署必填，匿名隧道不填，命名隧道可省略 |
+| `CF_TUNNEL_TOKEN` | 空 | 远程管理命名隧道的连接器 Token；填后自动启用固定域名模式 |
+| `CF_QUICK_TUNNEL` | 自动 | 没有 BASE_URL / CF_TUNNEL_TOKEN 时开启匿名隧道；设 false 可禁止自动隧道 |
+| `CF_TUNNEL_STARTUP_TIMEOUT_MS` | 60000 | 隧道启动等待时间，100–180000 毫秒 |
+| `CLOUDFLARED_PATH` | cloudflared | 镜像内置固定版本的 cloudflared，可指定可执行路径 |
 | `WEB_PASSWORD` | 必填 | 网页访问密码，不写入普通日志 |
 | `WEB_PORT` | 8080 | 容器 HTTP 端口；设为 0 可用纯 stdio 模式 |
 | `MAX_INSTANCES` | 10 | 最大并发实例数，1–100 |
@@ -166,9 +216,9 @@ Agent 可通过 MCP 创建无需登录的只读观看链接；链接使用 `BASE
 | `ALLOW_PRIVATE_NETWORKS` | false | 显式允许内网测试，会扩大访问范围 |
 | `CHROMIUM_SANDBOX` | false | 是否启用 Chromium sandbox，需宿主配套配置 |
 
-密码或 BASE_URL 缺失时，Web 模式启动失败，不会开放无密码管理页。BASE_URL 仅用于外部地址、来源校验与 Cookie 设置，不能替代实际网络配置。
+Web 模式始终要求 WEB_PASSWORD。自动隧道失败时会退出，不会回退为无密码服务。隧道进程意外退出会使服务退出，交由 Docker 的重启策略恢复；匿名模式恢复后地址可能改变。隧道需要出站 HTTPS 和 TCP 7844 连通；无需开放入站端口。CF_QUICK_TUNNEL=true 与 BASE_URL / CF_TUNNEL_TOKEN 互斥。命名隧道可设置 BASE_URL 覆盖自动域名识别。普通自管模式下，BASE_URL 不替代实际网络配置。
 
-对于路径前缀，反向代理可保留或剥离该前缀，页面链接均使用配置的外部前缀。反向代理需保留客户端 Origin，且直播路由禁用缓冲（Nginx 可设 `proxy_buffering off`），MCP 路由需允许 POST 并配置足够超时。
+对于路径前缀，反向代理可保留或剥离该前缀，页面链接均使用配置的外部前缀。反向代理需保留客户端 Origin，且 MJPEG 直播路由禁用缓冲（Nginx 可设 `proxy_buffering off`），MCP 路由需允许 POST 并配置足够超时。
 
 ## 使用预配置代理（可选）
 
@@ -208,10 +258,10 @@ bash scripts/publish-docker.sh
 ## 源码构建及 stdio 接入
 
 ```sh
-docker build -t docker-browser-mcp:0.4.0 .
+docker build -t docker-browser-mcp:0.5.0 .
 ```
 
-将一行部署命令最后的镜像名换成 `docker-browser-mcp:0.4.0` 即可本地使用。
+将一行部署命令最后的镜像名换成 `docker-browser-mcp:0.5.0` 即可本地使用。
 
 兼容配置见 [本地 stdio](examples/mcp.local.json)、[SSH stdio](examples/mcp.ssh.json)。仍使用 `docker exec -i`，不得使用 `-t`。MCP_PRINCIPAL 是可信 SSH/Docker 接入中的命名空间，不是独立认证。
 

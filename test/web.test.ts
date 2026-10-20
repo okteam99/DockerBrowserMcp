@@ -265,6 +265,14 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
     assert.equal(publicHtml.headers.get('referrer-policy'), 'no-referrer');
     assert.match(publicHtml.headers.get('x-robots-tag')!, /noindex/);
     assert.ok(!(await publicHtml.text()).includes(auth.Authorization));
+    const publicFrame = await fetch(liveShare.frame_url);
+    assert.equal(publicFrame.status, 200);
+    assert.equal(
+      Buffer.from(await publicFrame.arrayBuffer())
+        .subarray(0, 2)
+        .toString('hex'),
+      'ffd8',
+    );
     const shareToken = liveShare.url.split('/').at(-1)!;
     assert.equal(
       (
@@ -301,6 +309,7 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
       /* Drain already buffered frames until the connection closes. */
     }
     assert.equal((await fetch(revokeShare.media_url)).status, 404);
+    assert.equal((await fetch(revokeShare.frame_url)).status, 404);
     assert.ok(
       (await call('list_share_links')).data.some((s: any) => s.share_id === liveShare.share_id),
     );

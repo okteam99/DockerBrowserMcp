@@ -10,7 +10,7 @@ import { createMcpServer, type Dispatch } from './mcp.js';
 import { definitions } from './tools.js';
 import { dashboard, loginPage, sharePage } from './web-ui.js';
 import { publicError } from './errors.js';
-import { liveMedia, videoMedia } from './media.js';
+import { frameMedia, liveMedia, videoMedia } from './media.js';
 
 async function body(req: IncomingMessage, limit = 1048576) {
   const chunks: Buffer[] = [];
@@ -104,7 +104,7 @@ export async function startWeb(manager: BrowserManager, cfg: Config, dispatch: D
         return;
       }
       if (path === '/healthz') {
-        json(res, { status: 'ok', version: '0.4.0' });
+        json(res, { status: 'ok', version: '0.5.0' });
         return;
       }
       if (path === '/mcp') {
@@ -162,7 +162,7 @@ export async function startWeb(manager: BrowserManager, cfg: Config, dispatch: D
         res.end(session ? dashboard(prefix, session) : loginPage(prefix));
         return;
       }
-      const shared = /^\/share\/([A-Za-z0-9_-]{43})(?:\/(media|status))?$/.exec(path);
+      const shared = /^\/share\/([A-Za-z0-9_-]{43})(?:\/(media|status|frame))?$/.exec(path);
       if (shared && ['GET', 'HEAD'].includes(req.method ?? '')) {
         res.setHeader('referrer-policy', 'no-referrer');
         res.setHeader('x-robots-tag', 'noindex, nofollow, noarchive');
@@ -202,12 +202,17 @@ export async function startWeb(manager: BrowserManager, cfg: Config, dispatch: D
           state,
           expires_at: grant.expires_at,
           media_url: `${prefix}/share/${shared[1]}/media`,
+          frame_url: grant.kind === 'live' ? `${prefix}/share/${shared[1]}/frame` : undefined,
           status_url: `${prefix}/share/${shared[1]}/status`,
         };
         if (shared[2] === 'status') json(res, view);
         else if (!shared[2]) {
           res.setHeader('content-type', 'text/html; charset=utf-8');
           res.end(req.method === 'HEAD' ? undefined : sharePage(prefix, view));
+        } else if (shared[2] === 'frame') {
+          if (grant.kind !== 'live' || req.method !== 'GET') json(res, { error: 'Not found' }, 404);
+          else if (state !== 'live') json(res, { error: 'Live stream ended' }, 410);
+          else frameMedia(manager, res, grant.resource_id);
         } else if (!['live', 'ready'].includes(state))
           json(res, { error: state === 'ended' ? 'Live stream ended' : 'Media unavailable' }, 410);
         else if (grant.kind === 'live') {
@@ -259,6 +264,7 @@ export async function startWeb(manager: BrowserManager, cfg: Config, dispatch: D
           mcp_config,
           agent_instructions,
           tool_count: Object.keys(definitions).length,
+          live_transport: 'frames',
           max_instances: cfg.maxInstances,
         });
         return;
@@ -283,6 +289,11 @@ export async function startWeb(manager: BrowserManager, cfg: Config, dispatch: D
       }
       if (path === '/api/recordings' && req.method === 'GET') {
         json(res, await manager.recordings.list());
+        return;
+      }
+      const frame = /^\/api\/instances\/(ins_[a-f0-9-]{36})\/frame$/.exec(path);
+      if (frame && req.method === 'GET') {
+        frameMedia(manager, res, frame[1]);
         return;
       }
       const live = /^\/api\/instances\/(ins_[a-f0-9-]{36})\/live$/.exec(path);

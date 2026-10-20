@@ -38,43 +38,30 @@ try {
   const result = JSON.parse(created.content[0].text);
   assert.equal(result.status, 'succeeded', JSON.stringify(result));
   instance = result.data.instance_id;
-  const abort = new AbortController();
-  const deadline = setTimeout(() => abort.abort(), 10000);
-  deadline.unref();
-  const live = await fetch(`${base}/api/instances/${instance}/live`, {
-    headers: { Cookie: cookie },
-    signal: abort.signal,
-  });
-  assert.equal(live.status, 200);
-  const reader = live.body!.getReader();
-  let frame = Buffer.alloc(0);
-  for (let n = 0; n < 10; n++) {
-    const part = await reader.read();
-    frame = Buffer.concat([frame, Buffer.from(part.value ?? [])]);
-    if (frame.includes(Buffer.from([255, 216]))) break;
-  }
-  abort.abort();
-  clearTimeout(deadline);
-  assert.ok(frame.includes(Buffer.from([255, 216])));
+  const readFrame = async (url: string, headers?: Record<string, string>) => {
+    const signal = AbortSignal.timeout(15000);
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const response = await fetch(url, { headers, signal });
+      if (response.status === 204) {
+        await new Promise((r) => setTimeout(r, 200));
+        continue;
+      }
+      assert.equal(response.status, 200);
+      assert.match(response.headers.get('content-type')!, /image\/jpeg/);
+      assert.ok(
+        Buffer.from(await response.arrayBuffer())
+          .subarray(0, 2)
+          .equals(Buffer.from([255, 216])),
+      );
+      return;
+    }
+    throw Error('No live frame available');
+  };
+  await readFrame(`${base}/api/instances/${instance}/frame`, { Cookie: cookie });
   const sharedLive = await call('create_share_link', { kind: 'live', instance_id: instance });
   shares.push(sharedLive.share_id);
   assert.equal((await fetch(sharedLive.url)).status, 200);
-  const sharedAbort = new AbortController();
-  const sharedDeadline = setTimeout(() => sharedAbort.abort(), 10000);
-  try {
-    const sharedStream = await fetch(sharedLive.media_url, { signal: sharedAbort.signal });
-    assert.equal(sharedStream.status, 200);
-    const sharedReader = sharedStream.body!.getReader();
-    let sharedFrame = Buffer.alloc(0);
-    while (!sharedFrame.includes(Buffer.from([255, 216]))) {
-      const next = await sharedReader.read();
-      assert.equal(next.done, false);
-      sharedFrame = Buffer.concat([sharedFrame, Buffer.from(next.value!)]);
-    }
-  } finally {
-    sharedAbort.abort();
-    clearTimeout(sharedDeadline);
-  }
+  await readFrame(sharedLive.frame_url);
   const closed: any = await client.callTool({
     name: 'close_instance',
     arguments: { instance_id: instance },

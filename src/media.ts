@@ -8,6 +8,21 @@ const json = (res: ServerResponse, value: unknown, status: number) => {
   res.setHeader('content-type', 'application/json; charset=utf-8');
   res.end(JSON.stringify(value));
 };
+export function frameMedia(manager: BrowserManager, res: ServerResponse, instanceId: string) {
+  const recorder = manager.recordings.active.get(instanceId);
+  if (!recorder) {
+    json(res, { error: 'Instance not active' }, 404);
+    return;
+  }
+  if (!recorder.latest) {
+    res.statusCode = 204;
+    res.end();
+    return;
+  }
+  res.setHeader('content-type', 'image/jpeg');
+  res.setHeader('content-length', recorder.latest.bytes.length);
+  res.end(recorder.latest.bytes);
+}
 export function liveMedia(
   manager: BrowserManager,
   cfg: Config,

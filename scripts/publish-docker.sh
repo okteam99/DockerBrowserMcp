@@ -56,10 +56,8 @@ docker run -d --init \
   --name docker-browser-mcp \
   --restart unless-stopped \
   --shm-size=1g \
-  -p 8080:8080 \
-  -e BASE_URL=http://localhost:8080 \
   -e WEB_PASSWORD=CHANGE_ME \
-  -e MAX_INSTANCES=10 \
   -v browser-mcp-data:/data \
 DEPLOY
 printf '  %s:%s\n' "$image" "$tag"
+printf '\nView the generated HTTPS URL: docker logs docker-browser-mcp\n'

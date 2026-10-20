@@ -9,10 +9,12 @@ import { config } from './config.js';
 import { publicError, ToolError } from './errors.js';
 import { startWeb } from './web.js';
 import type { Dispatch } from './mcp.js';
+import { startCloudflareTunnel, validateTunnelConfig } from './tunnel.js';
 
 export async function daemon() {
   process.umask(0o077);
   const cfg = config();
+  validateTunnelConfig(cfg);
   const manager = new BrowserManager(cfg);
   await mkdir(dirname(cfg.socket), { recursive: true });
   try {
@@ -174,27 +176,17 @@ export async function daemon() {
     server.listen(cfg.socket, resolve);
   });
   await chmod(cfg.socket, 0o600);
-  let web;
-  try {
-    web = await startWeb(manager, cfg, dispatch);
-  } catch (e) {
-    server.close();
-    await manager.shutdown();
-    await audit.close();
-    await lock.close();
-    await unlink(cfg.socket).catch(() => {});
-    await unlink(`${cfg.socket}.lock`).catch(() => {});
-    throw e;
-  }
-  const timer = setInterval(() => {
-    void manager.sweep().catch(() => process.stderr.write('Resource cleanup failed\n'));
-  }, 15000);
-  timer.unref();
+  let web: Awaited<ReturnType<typeof startWeb>>;
+  let tunnel: Awaited<ReturnType<typeof startCloudflareTunnel>> | undefined;
+  let timer: NodeJS.Timeout | undefined;
+  const controller = new AbortController();
   let stopping = false;
-  const stop = async () => {
+  const stop = async (code = 0) => {
     if (stopping) return;
     stopping = true;
     clearInterval(timer);
+    controller.abort();
+    await tunnel?.close();
     await web?.close();
     server.close();
     await manager.shutdown();
@@ -202,9 +194,36 @@ export async function daemon() {
     await lock.close();
     await unlink(cfg.socket).catch(() => {});
     await unlink(`${cfg.socket}.lock`).catch(() => {});
-    process.exit(0);
+    process.exit(code);
   };
   process.on('SIGTERM', () => void stop());
   process.on('SIGINT', () => void stop());
+  try {
+    if (cfg.quickTunnel || cfg.cfTunnelToken) {
+      tunnel = await startCloudflareTunnel(cfg, controller.signal);
+      cfg.baseUrl = tunnel.url;
+      void tunnel.exited.then(() => {
+        if (!stopping) {
+          process.stderr.write('Cloudflare Tunnel stopped; shutting down for a clean restart.\n');
+          void stop(1);
+        }
+      });
+    }
+    web = await startWeb(manager, cfg, dispatch);
+    if (tunnel)
+      process.stderr.write(
+        `Public HTTPS URL: ${cfg.baseUrl}\nMCP URL: ${cfg.baseUrl}/mcp\n${cfg.quickTunnel ? 'Quick Tunnel URLs change on restart.' : 'Named tunnel uses the configured stable hostname.'}\n`,
+      );
+  } catch (error) {
+    if (!stopping) {
+      process.stderr.write(`${error instanceof Error ? error.message : 'Web startup failed'}\n`);
+      await stop(1);
+    }
+    return;
+  }
+  timer = setInterval(() => {
+    void manager.sweep().catch(() => process.stderr.write('Resource cleanup failed\n'));
+  }, 15000);
+  timer.unref();
   process.stderr.write('Browser MCP manager ready\n');
 }

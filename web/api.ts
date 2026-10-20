@@ -6,6 +6,7 @@ export type Bootstrap = {
     state: 'live' | 'ready' | 'ended' | 'unavailable';
     expires_at: string;
     media_url: string;
+    frame_url?: string;
     status_url: string;
   };
   error: string;

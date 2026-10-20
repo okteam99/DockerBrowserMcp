@@ -57,14 +57,23 @@ const integer = (name: string, fallback: number, min: number, max: number) => {
   return value;
 };
 export function config() {
+  const webPort = integer('WEB_PORT', 8080, 0, 65535);
+  const quickTunnel =
+    process.env.CF_QUICK_TUNNEL === undefined
+      ? webPort > 0 && !process.env.BASE_URL && !process.env.CF_TUNNEL_TOKEN
+      : process.env.CF_QUICK_TUNNEL === 'true';
   return {
     dataDir: resolve(process.env.DATA_DIR ?? './data'),
     socket: process.env.MCP_SOCKET ?? '/tmp/docker-browser-mcp.sock',
     proxyFile: process.env.PROXY_CONFIG ?? '/config/proxies.json',
     maxInstances: integer('MAX_INSTANCES', 10, 1, 100),
-    webPort: integer('WEB_PORT', 8080, 0, 65535),
+    webPort,
     webPassword: process.env.WEB_PASSWORD,
     baseUrl: process.env.BASE_URL,
+    quickTunnel,
+    cfTunnelToken: process.env.CF_TUNNEL_TOKEN,
+    cloudflared: process.env.CLOUDFLARED_PATH ?? 'cloudflared',
+    tunnelStartupTimeout: integer('CF_TUNNEL_STARTUP_TIMEOUT_MS', 60000, 100, 180000),
     recordVideo: process.env.RECORD_VIDEO !== 'false',
     videoFps: integer('VIDEO_FPS', 2, 1, 10),
     videoWidth: integer('VIDEO_WIDTH', 640, 160, 1280),

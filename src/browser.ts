@@ -455,7 +455,13 @@ export class BrowserManager {
         a.expires_in_seconds,
       );
       const url = `${this.cfg.baseUrl.replace(/\/$/, '')}/share/${token}`;
-      return { ...metadata, url, media_url: url + '/media', access: 'public_read_only' };
+      return {
+        ...metadata,
+        url,
+        media_url: url + '/media',
+        frame_url: a.kind === 'live' ? url + '/frame' : undefined,
+        access: 'public_read_only',
+      };
     }
     if (name === 'list_recordings')
       return (await this.recordings.list())
@@ -475,7 +481,13 @@ export class BrowserManager {
     if (name === 'health')
       return {
         status: 'ok',
-        version: '0.4.0',
+        version: '0.5.0',
+        base_url: this.cfg.baseUrl,
+        public_url_mode: this.cfg.quickTunnel
+          ? 'quick_tunnel'
+          : this.cfg.cfTunnelToken
+            ? 'named_tunnel'
+            : 'custom',
         instances: this.instances.size,
         max_instances: this.cfg.maxInstances,
       };

@@ -1,4 +1,4 @@
-# MCP 接口 V0.4
+# MCP 接口 V0.5
 
 推荐使用 `BASE_URL/mcp` 的 Streamable HTTP，携带 `Authorization: Bearer <登录网页自动生成的 Token>`。网页登录后可复制完整配置。兼容 MCP stdio，通过 SSH 或 docker exec 接入。HTTP 调用共享 web principal，stdio 仍按 MCP_PRINCIPAL 隔离。
 
@@ -50,7 +50,7 @@
 
 | 工具 | 输入 | 输出 |
 | --- | --- | --- |
-| `create_share_link` | kind=live + instance_id，或 kind=recording + recording_id；可选 expires_in_seconds（默认86400，1–2592000） | share_id、kind、resource_id、status、created_at、expires_at、url、media_url、access=public_read_only |
+| `create_share_link` | kind=live + instance_id，或 kind=recording + recording_id；可选 expires_in_seconds（默认86400，1–2592000） | share_id、kind、resource_id、status、created_at、expires_at、url、media_url、frame_url（直播）、access=public_read_only |
 | `list_share_links` | `{}` | 当前 principal 的分享元信息；不返回链接密钥或 URL |
 | `revoke_share_link` | share_id | 撤销后的元信息，重复撤销仍成功 |
 
@@ -62,7 +62,7 @@
 {"kind":"recording","recording_id":"rec_...","expires_in_seconds":86400}
 ```
 
-同一实例可生成多个独立链接。公开链接无需登录，持有者可以观看对应内容；Agent 应在用户要求公开分享时调用。链接只读，不授权 MCP、控制台或其他实例。`url` 为手机/桌面观看页，`media_url` 可用于 MJPEG/WebM 媒体访问，录像支持 HEAD/Range。
+同一实例可生成多个独立链接。公开链接无需登录，持有者可以观看对应内容；Agent 应在用户要求公开分享时调用。链接只读，不授权 MCP、控制台或其他实例。`url` 为手机/桌面观看页，`media_url` 可用于 MJPEG/WebM 媒体访问，直播额外返回 `frame_url`（单帧 JPEG）。观看页逐帧刷新以兼容隧道缓冲；通过匿名 Cloudflare 隧道时请使用观看页或轮询 frame_url，不依赖 MJPEG。录像支持 HEAD/Range。
 
 直播必须属于当前 principal 且正在运行；直播结束不自动开放录像。录像必须属于当前 principal、已完成写入且文件非空，可先关闭实例，再调用 `list_recordings` 获取 ID。录像提前被清理时链接不可用。
 
@@ -70,7 +70,7 @@
 
 撤销或到期后，后续访问返回404，已有直播连接在1秒内断开；已下载/已缓冲内容无法收回。观看页状态约3秒刷新一次。直播正常结束的媒体请求返回410，观看页显示已结束。
 
-无需登录的路由仅有：`GET /share/{随机密钥}`、`GET /share/{随机密钥}/status`、`GET /share/{随机密钥}/media`（录像另支持 HEAD）。密钥不能替换为 MCP Token，也不能作为 MCP Bearer 使用。公开页不返回代理信息、原网页 URL、控制台凭证或其他资源列表。静态资源和健康检查仍保持原有访问策略。
+无需登录的路由仅有：`GET /share/{随机密钥}`、`GET /share/{随机密钥}/status`、`GET /share/{随机密钥}/media`（录像另支持 HEAD）、`GET /share/{随机密钥}/frame`（仅直播）。密钥不能替换为 MCP Token，也不能作为 MCP Bearer 使用。公开页不返回代理信息、原网页 URL、控制台凭证或其他资源列表。静态资源和健康检查仍保持原有访问策略。
 
 ## 页面与定位
 
@@ -157,8 +157,15 @@ artifact_id 不接受任意文件路径。get_artifact 按 next_offset 继续读
 - `GET /api/connection`：自动生成的 MCP URL、JSON 配置、完整 Agent 接入说明。
 - `GET /api/instances`：管理员可查看全部活跃实例及容量。
 - `GET /api/instances/{instance_id}/live`：MJPEG 低帧率直播。
+- `GET /api/instances/{instance_id}/frame`：当前采样 JPEG，无画面时204；实例结束404。网页最多约2 FPS逐帧刷新。
 - `GET /api/recordings`：历史录像。
 - `GET /api/recordings/{recording_id}/video`：WebM 播放/下载，支持 Range；录像未完成返回 409。
 - `GET /docs/README.md`、`/docs/mcp-api.md`、`/docs/mcp-tools.json`、`/docs/agent-workflow.md`：完整文档。
 
 `POST /mcp` 只接受 Bearer 鉴权，不使用 Cookie。密码变更并重启后 Token 轮换；不把 Token 放在 URL 中。直播和录屏包含可见业务内容，请仅授权可信使用方。
+
+## 自动 HTTPS 入口
+
+仅设置 WEB_PASSWORD 即可默认启动匿名 Quick Tunnel；设置 CF_TUNNEL_TOKEN 后使用命名隧道并自动识别域名。设置 BASE_URL 可指定自管入口，或在命名隧道有多个域名时选择主入口。日志给出 Public HTTPS URL 与 MCP URL；网页登录后生成的连接配置和分享链接使用该地址。匿名地址会在隧道重建后变化，应重新复制 MCP 配置和生成分享链接；已有分享授权不会延长过期时间。命名隧道的域名需提前在 Cloudflare 绑定并指向 localhost:8080。
+
+本服务 Streamable HTTP 使用 JSON 响应，不依赖 Quick Tunnel 不支持的 SSE。所有模式保留原有密码、MCP Bearer、分享密钥和所有者隔离。

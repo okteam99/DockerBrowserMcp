@@ -43,7 +43,7 @@ await client.callTool({
   arguments: {
     instance_id: i.instance_id,
     page_id: i.pages[0].page_id,
-    url: `http://127.0.0.1:${(fixture.address() as any).port}`,
+    url: process.env.PREVIEW_URL ?? `http://127.0.0.1:${(fixture.address() as any).port}`,
   },
 });
 console.log('Preview instance created:', i.instance_id);
