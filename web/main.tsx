@@ -429,7 +429,7 @@ function Dashboard() {
                     </Tag>
                     <Title level={3}>从连接 Agent 开始</Title>
                     <Paragraph>
-                      复制完整接入说明，Agent 就能创建浏览器实例。
+                      复制接入信息，Agent 按公开文档即可操作浏览器。
                       <br />
                       你可以在这里实时观看，也可以稍后回看录像。
                     </Paragraph>
@@ -440,8 +440,9 @@ function Dashboard() {
                         size="large"
                         disabled={!service.connection}
                         onClick={copyGuide}
+                        aria-label="复制 Agent 接入信息"
                       >
-                        复制完整 Agent 接入说明
+                        复制 Agent 接入信息
                       </Button>
                       <Button
                         size="large"
@@ -626,7 +627,7 @@ function Dashboard() {
         </Layout>
       </Layout>
       <Modal
-        title="完整 Agent 接入说明"
+        title="Agent 接入信息"
         open={guideOpen}
         onCancel={() => setGuideOpen(false)}
         width={820}
@@ -634,7 +635,7 @@ function Dashboard() {
           <Space>
             <Button onClick={() => setGuideOpen(false)}>关闭</Button>
             <Button type="primary" icon={<CopyOutlined />} onClick={copyGuide}>
-              复制接入说明
+              复制接入信息
             </Button>
           </Space>
         }
@@ -642,7 +643,7 @@ function Dashboard() {
         <Paragraph type="secondary">内容包含访问 Token，请仅分享给可信的 Agent。</Paragraph>
         <Input.TextArea
           readOnly
-          autoSize={{ minRows: 12, maxRows: 22 }}
+          autoSize={{ minRows: 6, maxRows: 12 }}
           value={service.connection?.agent_instructions}
           aria-label="Agent 接入说明"
           className="mono-input"
@@ -1103,7 +1104,13 @@ function ConnectionPage({
       <Card className="connection-banner" bordered={false}>
         <div>
           <Title level={4}>一步，把浏览器连接到 Agent</Title>
-          <Paragraph type="secondary">接入说明已包含地址、鉴权、工具列表和操作文档。</Paragraph>
+          <Paragraph type="secondary">
+            一句话、MCP 地址、认证信息和一个公开文档链接。
+            <br />
+            <Typography.Link href={connection.agent_guide_url} target="_blank" rel="noreferrer">
+              查看公开接入文档
+            </Typography.Link>
+          </Paragraph>
         </div>
         <Space wrap>
           <Button icon={<FileTextOutlined />} onClick={onGuide}>
@@ -1113,8 +1120,9 @@ function ConnectionPage({
             type="primary"
             icon={<CopyOutlined />}
             onClick={() => onCopy(connection.agent_instructions)}
+            aria-label="复制 Agent 接入信息"
           >
-            复制完整 Agent 接入说明
+            复制 Agent 接入信息
           </Button>
         </Space>
       </Card>
@@ -1233,7 +1241,7 @@ function ConnectionPage({
               direction="vertical"
               size="small"
               items={[
-                { title: '复制完整接入说明', description: '无需手动拼接地址或鉴权信息' },
+                { title: '复制接入信息', description: '地址、认证与公开文档一次复制' },
                 {
                   title: '配置到 Agent 的 MCP 客户端',
                   description: '支持 Streamable HTTP 和自定义请求头',

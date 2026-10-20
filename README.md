@@ -1,6 +1,6 @@
 # DockerBrowserMcp
 
-**让 AI 操作浏览器，实时直播、全程录屏，操作过程看得见。** 通过 MCP 将远程浏览器接入 AI Agent；打开控制台、输入访问密码，即可复制完整接入说明。
+**让 AI 操作浏览器，实时直播、全程录屏，操作过程看得见。** 通过 MCP 将远程浏览器接入 AI Agent；打开控制台、输入访问密码，即可复制接入信息。
 
 实例创建时可指定 UA、页面视口、HTTP/SOCKS5 鉴权代理、语言与时区；支持点击、输入、iframe、多标签页、上传下载、截图及诊断。
 
@@ -17,7 +17,7 @@ docker run -d --init \
   --shm-size=1g \
   -e WEB_PASSWORD='替换为你的强密码' \
   -v browser-mcp-data:/data \
-  bdpgogoup/dockerbrowsermcp:20261020211603
+  bdpgogoup/dockerbrowsermcp:20261020221705
 ```
 
 查看自动生成的 HTTPS 地址：
@@ -26,7 +26,7 @@ docker run -d --init \
 docker logs docker-browser-mcp
 ```
 
-日志中的 `Public HTTPS URL` 就是控制台地址。打开后输入密码，复制完整 MCP 接入说明。MCP 地址、直播及录屏分享地址全部自动使用该 HTTPS 地址。
+日志中的 `Public HTTPS URL` 就是控制台地址。打开后输入密码，复制 MCP 接入信息。MCP 地址、直播及录屏分享地址全部自动使用该 HTTPS 地址。
 
 此模式使用匿名 Cloudflare Quick Tunnel；容器重新创建隧道后地址会变化，旧 MCP 和分享 URL 需更新。它适合试用和临时测试，没有可用性保证，最多200个进行中的请求，不支持 SSE。本服务 MCP 使用 JSON 响应，网页直播使用逐帧 JPEG 刷新。[Cloudflare 官方限制](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)
 
@@ -44,7 +44,7 @@ docker run -d --init \
   -e WEB_PASSWORD='替换为你的强密码' \
   -e CF_TUNNEL_TOKEN='替换为隧道的连接器Token' \
   -v browser-mcp-data:/data \
-  bdpgogoup/dockerbrowsermcp:20261020211603
+  bdpgogoup/dockerbrowsermcp:20261020221705
 ```
 
 服务自动读取隧道配置，识别唯一指向本容器端口的域名，无需再填 `BASE_URL`。如果配置了多个符合条件的域名、通配符或路径规则，请增加 `-e BASE_URL=https://browser.example.com` 明确选择地址。只支持 Cloudflare 远程管理的命名隧道，不会代替用户购买域名或创建 DNS。
@@ -64,7 +64,7 @@ docker run -d --init \
   -e BASE_URL=http://localhost:8080 \
   -e WEB_PASSWORD='替换为你的强密码' \
   -v browser-mcp-data:/data \
-  bdpgogoup/dockerbrowsermcp:20261020211603
+  bdpgogoup/dockerbrowsermcp:20261020221705
 ```
 
 部署到远程服务器时，将 `BASE_URL` 改为实际可访问地址；部署方负责 DNS、反向代理、HTTPS 或端口映射接通容器8080。`BASE_URL` 可带路径前缀。
@@ -72,9 +72,20 @@ docker run -d --init \
 ### 使用步骤
 
 1. 打开 `BASE_URL`，输入 `WEB_PASSWORD`。
-2. 点击 **复制完整 Agent 接入说明**，粘贴给 Agent。也可单独复制 MCP JSON 配置。
+2. 点击 **复制 Agent 接入信息**，粘贴给 Agent。也可单独复制 MCP JSON 配置。
 3. Agent 配置远程 MCP 后，先调用 `health`，再创建和控制浏览器实例。
 4. 在网页“实时实例”中选择实例观看直播；关闭实例后，在“历史录屏”播放录像。
+
+复制内容采用简短格式：一句话、MCP 地址、认证请求头和一个公开文档链接。文档由当前部署提供，无需登录，包含完整接口参考与 Agent 操作流程，与镜像内的文档版本一致。
+
+```text
+请接入以下远程浏览器 MCP，先阅读公开文档并发现可用工具，再按我的要求操作浏览器。
+MCP（Streamable HTTP）：https://browser.example.com/mcp
+认证请求头：Authorization: Bearer <自动生成的Token>
+公开文档：https://browser.example.com/docs/agent-guide.md
+```
+
+公开文档仅提供通用说明；真实 Token 仍通过登录后的复制操作获取。复制内容包含服务访问凭据，请只交给可信使用方。
 
 控制台使用 React + Ant Design，包含工作台、实时实例、历史录屏、MCP 接入和文档中心，并适配手机屏幕。所有前端资源随镜像打包，不依赖外部 CDN。
 
@@ -258,10 +269,10 @@ bash scripts/publish-docker.sh
 ## 源码构建及 stdio 接入
 
 ```sh
-docker build -t docker-browser-mcp:0.5.0 .
+docker build -t docker-browser-mcp:0.5.1 .
 ```
 
-将一行部署命令最后的镜像名换成 `docker-browser-mcp:0.5.0` 即可本地使用。
+将一行部署命令最后的镜像名换成 `docker-browser-mcp:0.5.1` 即可本地使用。
 
 兼容配置见 [本地 stdio](examples/mcp.local.json)、[SSH stdio](examples/mcp.ssh.json)。仍使用 `docker exec -i`，不得使用 `-t`。MCP_PRINCIPAL 是可信 SSH/Docker 接入中的命名空间，不是独立认证。
 

@@ -23,6 +23,19 @@ try {
   const info: any = await (
     await fetch(base + '/api/connection', { headers: { Cookie: cookie } })
   ).json();
+  assert.equal(info.agent_instructions.split('\n').length, 4);
+  assert.ok(
+    info.agent_instructions.includes(
+      info.mcp_config.mcpServers['docker-browser'].headers.Authorization,
+    ),
+  );
+  const publicGuide = await fetch(info.agent_guide_url);
+  assert.equal(publicGuide.status, 200);
+  const guide = await publicGuide.text();
+  assert.ok(guide.includes('create_instance'));
+  assert.ok(
+    !guide.includes(info.mcp_config.mcpServers['docker-browser'].headers.Authorization.slice(7)),
+  );
   client = new Client({ name: 'http-smoke', version: '1' });
   await client.connect(
     new StreamableHTTPClientTransport(new URL(info.mcp_url), {

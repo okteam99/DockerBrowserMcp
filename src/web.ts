@@ -77,6 +77,19 @@ export async function startWeb(manager: BrowserManager, cfg: Config, dispatch: D
     const bearer = auth.bearer(req.headers.authorization);
     const authorized = Boolean(session || bearer);
     try {
+      if (path === '/docs/agent-guide.md' && ['GET', 'HEAD'].includes(req.method ?? '')) {
+        // Only static, generic documentation is public. Never interpolate deployment credentials or state.
+        const files = ['docs/agent-connection.md', 'docs/mcp-api.md', 'docs/agent-workflow.md'];
+        const parts = await Promise.all(
+          files.map((file) => readFile(`${docsRoot}${file}`, 'utf8')),
+        );
+        const guide = parts.join('\n\n---\n\n');
+        res.setHeader('content-type', 'text/plain; charset=utf-8');
+        res.setHeader('access-control-allow-origin', '*');
+        res.setHeader('content-length', Buffer.byteLength(guide));
+        res.end(req.method === 'HEAD' ? undefined : guide);
+        return;
+      }
       if (req.headers.origin && req.headers.origin !== base.origin) {
         json(res, { error: 'Origin not allowed' }, 403);
         return;
@@ -104,7 +117,7 @@ export async function startWeb(manager: BrowserManager, cfg: Config, dispatch: D
         return;
       }
       if (path === '/healthz') {
-        json(res, { status: 'ok', version: '0.5.0' });
+        json(res, { status: 'ok', version: '0.5.1' });
         return;
       }
       if (path === '/mcp') {
@@ -255,14 +268,14 @@ export async function startWeb(manager: BrowserManager, cfg: Config, dispatch: D
             },
           },
         };
-        const workflow = await readFile(`${docsRoot}docs/agent-workflow.md`, 'utf8');
-        const api = await readFile(`${docsRoot}docs/mcp-api.md`, 'utf8');
-        const agent_instructions = `# DockerBrowserMcp 远程浏览器接入\n\n服务: ${baseUrl}\nMCP: ${mcpUrl}\n传输: Streamable HTTP（非旧 SSE），支持的 MCP 客户端使用 HTTP POST。\n鉴权: Authorization: Bearer ${auth.token}\n\n此 Token 可控制浏览器及读取录屏，请仅在该服务使用。\n\n## MCP 配置\n\n${JSON.stringify(mcp_config, null, 2)}\n\n## 接入约定\n\n配置此 MCP 后先调用 health 和 tools/list。创建浏览器时可指定 user_agent、viewport、proxy（含 server、username、password）或 proxy_ref；默认最多 ${cfg.maxInstances} 个并发实例。\n实例直播与历史录像: ${baseUrl}/ （网页登录）。录屏可通过 list_recordings 查询，用相同 Bearer 鉴权获取 playback_url。用户需要公开观看时，调用 create_share_link 生成独立只读直播/录像链接；可设有效期，用 revoke_share_link 撤销。\n\nMCP Schema: ${baseUrl}/docs/mcp-tools.json （需相同 Authorization 头）\n完整使用文档: ${baseUrl}/docs/README.md\n\n${workflow}\n\n${api}`;
+        const agent_guide_url = `${baseUrl}/docs/agent-guide.md`;
+        const agent_instructions = `请接入以下远程浏览器 MCP，先阅读公开文档并发现可用工具，再按我的要求操作浏览器。\nMCP（Streamable HTTP）：${mcpUrl}\n认证请求头：Authorization: Bearer ${auth.token}\n公开文档：${agent_guide_url}`;
         json(res, {
           base_url: baseUrl,
           mcp_url: mcpUrl,
           mcp_config,
           agent_instructions,
+          agent_guide_url,
           tool_count: Object.keys(definitions).length,
           live_transport: 'frames',
           max_instances: cfg.maxInstances,

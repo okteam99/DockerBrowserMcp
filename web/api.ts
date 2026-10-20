@@ -16,6 +16,7 @@ export type Connection = {
   base_url: string;
   mcp_url: string;
   agent_instructions: string;
+  agent_guide_url: string;
   mcp_config: {
     mcpServers: Record<string, { type: string; url: string; headers: { Authorization: string } }>;
   };

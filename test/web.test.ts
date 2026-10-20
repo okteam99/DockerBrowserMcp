@@ -103,6 +103,30 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
     assert.match(await root.text(), /访问密码/);
     assert.equal((await fetch(base + '/api/connection')).status, 401);
     assert.equal((await fetch(base + '/mcp', { method: 'POST', body: '{}' })).status, 401);
+    const publicGuide = await fetch(base + '/docs/agent-guide.md', {
+      headers: { Origin: 'https://agent.example' },
+    });
+    assert.equal(publicGuide.status, 200);
+    assert.equal(publicGuide.headers.get('access-control-allow-origin'), '*');
+    assert.match(publicGuide.headers.get('content-type')!, /text\/plain/);
+    const guideText = await publicGuide.text();
+    for (const name of [
+      'tools/list',
+      'create_instance',
+      'create_share_link',
+      'upload_file',
+      'close_instance',
+    ])
+      assert.ok(guideText.includes(name));
+    assert.ok(!guideText.includes('test-password-123'));
+    const guideHead = await fetch(base + '/docs/agent-guide.md', { method: 'HEAD' });
+    assert.equal(guideHead.status, 200);
+    assert.equal(Number(guideHead.headers.get('content-length')), Buffer.byteLength(guideText));
+    assert.equal(await guideHead.text(), '');
+    assert.equal((await fetch(base + '/docs/mcp-api.md')).status, 401);
+    assert.equal((await fetch(base + '/docs/mcp-tools.json')).status, 401);
+    assert.equal((await fetch(base + '/docs/agent-guide.md', { method: 'POST' })).status, 401);
+
     assert.equal(
       (
         await fetch(base + '/login', {
@@ -132,9 +156,7 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
       await page.goto(base + '/');
       await page.getByLabel('访问密码').fill('test-password-123');
       await page.getByRole('button', { name: /^登\s*录$/, exact: true }).click();
-      await page
-        .getByRole('button', { name: '复制完整 Agent 接入说明' })
-        .waitFor({ timeout: 5000 });
+      await page.getByRole('button', { name: '复制 Agent 接入信息' }).waitFor({ timeout: 5000 });
       await page.getByRole('menuitem', { name: 'MCP 接入' }).click();
       await page.getByLabel('MCP 地址', { exact: true }).waitFor();
       assert.equal(await page.getByLabel('MCP 地址', { exact: true }).inputValue(), base + '/mcp');
@@ -147,6 +169,21 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
       const copied = JSON.parse(await page.evaluate(() => navigator.clipboard.readText()));
       assert.equal(copied.mcpServers['docker-browser'].url, base + '/mcp');
       assert.match(copied.mcpServers['docker-browser'].headers.Authorization, /^Bearer [\w-]+$/);
+      await page.getByRole('button', { name: '复制 Agent 接入信息', exact: true }).click();
+      const copiedGuide = await page.evaluate(() => navigator.clipboard.readText());
+      assert.equal(copiedGuide.split('\n').length, 4);
+      assert.ok(copiedGuide.includes(copied.mcpServers['docker-browser'].headers.Authorization));
+      assert.ok(copiedGuide.endsWith(base + '/docs/agent-guide.md'));
+      assert.ok(copiedGuide.includes(base + '/mcp'));
+      assert.equal(
+        await page.getByRole('link', { name: '查看公开接入文档' }).getAttribute('href'),
+        base + '/docs/agent-guide.md',
+      );
+      assert.ok(
+        !guideText.includes(
+          copied.mcpServers['docker-browser'].headers.Authorization.split(' ')[1],
+        ),
+      );
 
       await page.getByRole('menuitem', { name: '使用文档' }).click();
       await page.locator('.markdown-body').waitFor();
@@ -177,7 +214,11 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
     const connection: any = await (await fetch(base + '/api/connection', { headers })).json();
     assert.equal(connection.mcp_url, base + '/mcp');
     assert.equal(connection.max_instances, 1);
-    assert.match(connection.agent_instructions, /create_instance/);
+    assert.equal(connection.agent_guide_url, base + '/docs/agent-guide.md');
+    assert.equal(connection.agent_instructions.split('\n').length, 4);
+    assert.ok(connection.agent_instructions.length < 700);
+    assert.equal((connection.agent_instructions.match(/https?:\/\/\S+/g) ?? []).length, 2);
+    assert.ok(connection.agent_instructions.includes(connection.agent_guide_url));
     const auth = connection.mcp_config.mcpServers['docker-browser'].headers;
     assert.ok(auth.Authorization.startsWith('Bearer '));
     assert.ok(!connection.mcp_url.includes(auth.Authorization.slice(7)));

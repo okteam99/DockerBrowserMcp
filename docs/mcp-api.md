@@ -152,9 +152,11 @@ artifact_id 不接受任意文件路径。get_artifact 按 next_offset 继续读
 
 所有地址均相对于 BASE_URL。`/` 为密码登录及说明/监看页；`POST /login`、`POST /logout` 管理 Cookie 会话。`GET /healthz` 仅返回无敏感信息的存活状态。
 
+`GET /docs/agent-guide.md`（支持 HEAD）无需登录：提供与当前镜像一致的通用接入指南、完整接口参考和 Agent 工作流。内容不包含部署凭据或实例数据，允许跨来源匿名读取。网页登录后的复制内容只包含一句话、MCP 地址、认证头和这个公开文档链接。
+
 以下路由均需要登录 Cookie 或相同 Bearer Token：
 
-- `GET /api/connection`：自动生成的 MCP URL、JSON 配置、完整 Agent 接入说明。
+- `GET /api/connection`：MCP URL、JSON 配置、简短的 agent_instructions 和公开文档地址 agent_guide_url。
 - `GET /api/instances`：管理员可查看全部活跃实例及容量。
 - `GET /api/instances/{instance_id}/live`：MJPEG 低帧率直播。
 - `GET /api/instances/{instance_id}/frame`：当前采样 JPEG，无画面时204；实例结束404。网页最多约2 FPS逐帧刷新。
