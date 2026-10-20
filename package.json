@@ -1,6 +1,6 @@
 {
   "name": "docker-browser-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -14,13 +14,16 @@
     "smoke": "tsx scripts/smoke.ts",
     "schema": "npm run build && tsx scripts/export-schema.ts",
     "format": "prettier --write src test scripts",
-    "format:check": "prettier --check src test scripts"
+    "format:check": "prettier --check src test scripts",
+    "release": "bash scripts/publish-docker.sh",
+    "smoke:http": "tsx scripts/smoke-http.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
     "ipaddr.js": "2.3.0",
     "playwright": "1.64.1",
     "proxy-chain": "3.0.1",
+    "sharp": "0.35.5",
     "zod": "3.25.76"
   },
   "devDependencies": {

@@ -1,0 +1,281 @@
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { mkdir, readdir, readFile, writeFile, stat, unlink } from 'node:fs/promises';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import type { Page } from 'playwright';
+import sharp from 'sharp';
+import type { Config } from './config.js';
+import { ToolError } from './errors.js';
+
+export type RecordingMeta = {
+  id: string;
+  instance_id: string;
+  owner: string;
+  created_at: string;
+  ended_at?: string;
+  status: string;
+  frames: number;
+  fps: number;
+  width: number;
+  height: number;
+  bytes: number;
+  error?: string;
+};
+export type LiveFrame = { bytes: Buffer; time: number; page_id: string };
+export class RecordingStore {
+  active = new Map<string, InstanceRecorder>();
+  constructor(public cfg: Config) {}
+  path(id: string, ext = 'webm') {
+    if (!/^rec_[a-f0-9-]{36}$/.test(id))
+      throw new ToolError('RECORDING_NOT_FOUND', 'Unknown recording.');
+    return join(this.cfg.dataDir, 'recordings', `${id}.${ext}`);
+  }
+  async init() {
+    await mkdir(join(this.cfg.dataDir, 'recordings'), { recursive: true, mode: 0o700 });
+    for (const m of await this.list()) {
+      if (['recording', 'finalizing'].includes(m.status)) {
+        m.status = 'interrupted';
+        m.ended_at = new Date().toISOString();
+        await this.persist(m);
+      }
+    }
+    await this.clean();
+  }
+  async persist(m: RecordingMeta) {
+    const path = this.path(m.id, 'json');
+    await writeFile(`${path}.tmp`, JSON.stringify(m), { mode: 0o600 });
+    const { rename } = await import('node:fs/promises');
+    await rename(`${path}.tmp`, path);
+  }
+  async list() {
+    const names = await readdir(join(this.cfg.dataDir, 'recordings'));
+    const entries = await Promise.all(
+      names
+        .filter((x) => x.endsWith('.json'))
+        .map(async (n) => {
+          try {
+            return JSON.parse(
+              await readFile(join(this.cfg.dataDir, 'recordings', n), 'utf8'),
+            ) as RecordingMeta;
+          } catch {
+            return null;
+          }
+        }),
+    );
+    return entries
+      .map((x) => (x ? (this.active.get(x.instance_id)?.meta ?? x) : null))
+      .filter((x): x is RecordingMeta => !!x)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }
+  async get(id: string) {
+    try {
+      const m = JSON.parse(await readFile(this.path(id, 'json'), 'utf8')) as RecordingMeta;
+      return { meta: m, path: this.path(id) };
+    } catch {
+      throw new ToolError('RECORDING_NOT_FOUND', 'Unknown or expired recording.');
+    }
+  }
+  async start(
+    instance: string,
+    owner: string,
+    getPage: () =>
+      { page: Page; page_id: string; deviceScaleFactor?: number; busy?: boolean } | undefined,
+  ) {
+    const r = new InstanceRecorder(this, instance, owner, getPage);
+    this.active.set(instance, r);
+    await r.start();
+    return r;
+  }
+  async stop(instance: string) {
+    const r = this.active.get(instance);
+    if (r) {
+      await r.stop();
+      this.active.delete(instance);
+    }
+    await this.clean();
+  }
+  async clean() {
+    const all = await this.list();
+    let total = 0;
+    for (const m of all) total += (await stat(this.path(m.id)).catch(() => null))?.size ?? 0;
+    for (const m of [...all].reverse()) {
+      if (this.active.has(m.instance_id)) continue;
+      if (
+        Date.now() - Date.parse(m.created_at) > this.cfg.retentionHours * 3600000 ||
+        total > this.cfg.recordingsLimit
+      ) {
+        const bytes = (await stat(this.path(m.id)).catch(() => null))?.size ?? 0;
+        await unlink(this.path(m.id)).catch(() => {});
+        await unlink(this.path(m.id, 'json')).catch(() => {});
+        total -= bytes;
+      }
+    }
+  }
+}
+export class InstanceRecorder {
+  latest?: LiveFrame;
+  meta: RecordingMeta;
+  private process?: ChildProcessWithoutNullStreams;
+  private ended?: Promise<number | null>;
+  private timer?: NodeJS.Timeout;
+  private capturing?: Promise<void>;
+  private stopped = false;
+  private encoderDone = false;
+  constructor(
+    private store: RecordingStore,
+    instance: string,
+    owner: string,
+    private getPage: () =>
+      { page: Page; page_id: string; deviceScaleFactor?: number; busy?: boolean } | undefined,
+  ) {
+    const cfg = store.cfg;
+    this.meta = {
+      id: `rec_${randomUUID()}`,
+      instance_id: instance,
+      owner,
+      created_at: new Date().toISOString(),
+      status: cfg.recordVideo ? 'recording' : 'live_only',
+      frames: 0,
+      fps: cfg.videoFps,
+      width: cfg.videoWidth,
+      height: cfg.videoHeight,
+      bytes: 0,
+    };
+  }
+  async start() {
+    if (this.store.cfg.recordVideo) {
+      await this.store.persist(this.meta);
+      const c = this.store.cfg;
+      this.process = spawn(
+        c.ffmpeg,
+        [
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-f',
+          'image2pipe',
+          '-r',
+          String(c.videoFps),
+          '-c:v',
+          'mjpeg',
+          '-i',
+          'pipe:0',
+          '-an',
+          '-c:v',
+          'libvpx-vp9',
+          '-b:v',
+          '160k',
+          '-deadline',
+          'realtime',
+          '-cpu-used',
+          '8',
+          '-threads',
+          '1',
+          '-vf',
+          `pad=${c.videoWidth}:${c.videoHeight}:0:0:black`,
+          '-pix_fmt',
+          'yuv420p',
+          '-y',
+          this.store.path(this.meta.id),
+        ],
+        { stdio: ['pipe', 'pipe', 'pipe'] },
+      );
+      this.process.stdin.on('error', () => {});
+      this.process.stdout.resume();
+      this.process.stderr.resume();
+      this.ended = new Promise((resolve) => {
+        this.process!.once('error', () => {
+          this.meta.status = 'failed';
+          this.meta.error = 'Video encoder unavailable; check FFMPEG_PATH.';
+          resolve(null);
+        });
+        this.process!.once('exit', (code) => {
+          this.encoderDone = true;
+          if (code !== 0 && !['failed', 'limit_reached'].includes(this.meta.status)) {
+            this.meta.status = 'failed';
+            this.meta.error = 'Video encoder failed.';
+          }
+          resolve(code);
+        });
+      });
+    }
+    this.timer = setInterval(() => {
+      void this.tick();
+    }, 1000 / this.store.cfg.videoFps);
+    this.timer.unref();
+  }
+  private async tick() {
+    if (this.stopped || this.capturing) return;
+    this.capturing = this.capture().catch(() => {
+      this.meta.error = 'Frame sampling temporarily unavailable';
+    });
+    try {
+      await this.capturing;
+    } finally {
+      this.capturing = undefined;
+    }
+  }
+  private async capture() {
+    const active = this.getPage();
+    if (!active || active.page.isClosed() || active.busy) return;
+    const cfg = this.store.cfg;
+    const raw = await active.page.screenshot({
+      type: 'jpeg',
+      quality: cfg.videoQuality,
+      scale: 'css',
+      timeout: 2000,
+    });
+    const bytes = await sharp(raw)
+      .resize({
+        width: cfg.videoWidth,
+        height: cfg.videoHeight,
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .jpeg({ quality: cfg.videoQuality })
+      .toBuffer();
+    this.latest = { bytes, time: Date.now(), page_id: active.page_id };
+    if (
+      this.process &&
+      !this.encoderDone &&
+      !this.process.stdin.destroyed &&
+      !this.process.stdin.writableEnded
+    ) {
+      if (this.process.stdin.writableLength > 1048576) return; // Drop samples rather than accumulate memory under encoder backpressure.
+      this.process.stdin.write(bytes);
+      this.meta.frames++;
+      const size = (await stat(this.store.path(this.meta.id)).catch(() => null))?.size ?? 0;
+      this.meta.bytes = size;
+      if (size > cfg.recordingLimit) {
+        this.meta.status = 'limit_reached';
+        this.process.stdin.end();
+      }
+    }
+  }
+  async stop() {
+    if (this.stopped) return;
+    this.stopped = true;
+    if (this.timer) clearInterval(this.timer);
+    await Promise.race([
+      this.capturing,
+      new Promise((r) => {
+        const t = setTimeout(r, 3000);
+        t.unref();
+      }),
+    ]);
+    // Include a last view even for a short-lived instance.
+    if (!this.latest) await this.capture().catch(() => {});
+    if (this.process) {
+      this.process.stdin.end();
+      const kill = setTimeout(() => this.process?.kill('SIGKILL'), 10000);
+      kill.unref();
+      await this.ended;
+      clearTimeout(kill);
+      this.meta.ended_at = new Date().toISOString();
+      this.meta.bytes = (await stat(this.store.path(this.meta.id)).catch(() => null))?.size ?? 0;
+      if (this.meta.status === 'recording')
+        this.meta.status = this.meta.frames > 0 && this.meta.bytes > 0 ? 'completed' : 'failed';
+      await this.store.persist(this.meta);
+    }
+  }
+}

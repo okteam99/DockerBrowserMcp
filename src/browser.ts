@@ -22,6 +22,7 @@ import {
 } from './config.js';
 import { NetworkPolicy, createGateway } from './network.js';
 import { Artifacts } from './artifacts.js';
+import { RecordingStore } from './recordings.js';
 import { ToolError, publicError, safeUrl } from './errors.js';
 
 type PageEntry = {
@@ -47,6 +48,7 @@ type Instance = {
   busy: boolean;
   closing: boolean;
   crashed: boolean;
+  activePageId?: string;
 };
 export type Target = {
   ref?: string;
@@ -61,14 +63,17 @@ export class BrowserManager {
   instances = new Map<string, Instance>();
   artifacts: Artifacts;
   policy: NetworkPolicy;
+  recordings: RecordingStore;
   private creating = 0;
   constructor(public cfg: Config) {
     this.artifacts = new Artifacts(cfg);
     this.policy = new NetworkPolicy(cfg);
+    this.recordings = new RecordingStore(cfg);
   }
   async init() {
     await mkdir(this.cfg.dataDir, { recursive: true, mode: 0o700 });
     await this.artifacts.init();
+    await this.recordings.init();
     // The daemon holds its singleton lock before initialization. Remove orphaned download spools after restart.
     await rm(join(this.cfg.dataDir, 'sessions'), { recursive: true, force: true });
     await mkdir(join(this.cfg.dataDir, 'sessions'), { recursive: true, mode: 0o700 });
@@ -107,6 +112,7 @@ export class BrowserManager {
     }
     const entry: PageEntry = { page, generation: 0, refs: new Map() };
     i.pages.set(id, entry);
+    i.activePageId = id;
     page.on('close', () => {
       this.clearRefs(entry);
       i.pages.delete(id);
@@ -220,6 +226,12 @@ export class BrowserManager {
   private summary(i: Instance) {
     return {
       instance_id: i.id,
+      active_page_id: i.activePageId,
+      recording_id: this.recordings.active.get(i.id)?.meta.id,
+      live_frame_at: this.recordings.active.get(i.id)?.latest?.time,
+      live_url: this.cfg.baseUrl
+        ? `${this.cfg.baseUrl.replace(/\/$/, '')}/api/instances/${i.id}/live`
+        : undefined,
       status: i.crashed ? 'crashed' : 'ready',
       created_at: new Date(i.created).toISOString(),
       viewport: i.options.viewport,
@@ -308,10 +320,24 @@ export class BrowserManager {
       });
       this.instances.set(i.id, i);
       const p = await context.newPage();
+      await this.recordings.start(i.id, owner, () => {
+        const e = i.pages.get(i.activePageId ?? '') ?? Array.from(i.pages.values()).at(-1);
+        if (!e) return undefined;
+        return {
+          page: e.page,
+          page_id: Array.from(i.pages).find(([, v]) => v === e)![0],
+          deviceScaleFactor: i.options.mobile?.device_scale_factor ?? 1,
+          busy: i.busy,
+        };
+      });
       return { ...this.summary(i), actual: await this.environment(p) };
     } catch (e) {
       if (browser) {
         for (const [id, i] of this.instances) if (i.browser === browser) this.instances.delete(id);
+      }
+      if (browser) {
+        for (const [id, r] of this.recordings.active)
+          if (!this.instances.has(id)) await this.recordings.stop(id).catch(() => {});
       }
       await browser?.close().catch(() => {});
       await gateway?.close(true).catch(() => {});
@@ -369,6 +395,7 @@ export class BrowserManager {
     if (!i || i.owner !== owner) throw new ToolError('INSTANCE_NOT_FOUND', 'Unknown instance.');
     i.closing = true;
     this.instances.delete(id);
+    await this.recordings.stop(i.id).catch(() => {});
     await i.context.close().catch(() => {});
     await i.browser.close().catch(() => {});
     await i.gateway.close(true).catch(() => {});
@@ -385,11 +412,24 @@ export class BrowserManager {
       )
         await this.close(i.owner, i.id);
     await this.artifacts.clean();
+    await this.recordings.clean();
+  }
+  adminInstances() {
+    return Array.from(this.instances.values(), (i) => ({ ...this.summary(i), owner: i.owner }));
   }
   async shutdown() {
     await Promise.allSettled(Array.from(this.instances.values(), (i) => this.close(i.owner, i.id)));
   }
   async execute(owner: string, name: string, a: any): Promise<any> {
+    if (name === 'list_recordings')
+      return (await this.recordings.list())
+        .filter((r) => r.owner === owner && (!a.instance_id || r.instance_id === a.instance_id))
+        .map((r) => ({
+          ...r,
+          playback_url: this.cfg.baseUrl
+            ? `${this.cfg.baseUrl.replace(/\/$/, '')}/api/recordings/${r.id}/video`
+            : undefined,
+        }));
     if (name === 'put_artifact') {
       const bytes = Buffer.from(a.data_base64, 'base64');
       if (bytes.length > 524288)
@@ -399,7 +439,7 @@ export class BrowserManager {
     if (name === 'health')
       return {
         status: 'ok',
-        version: '0.1.0',
+        version: '0.2.0',
         instances: this.instances.size,
         max_instances: this.cfg.maxInstances,
       };
@@ -498,6 +538,7 @@ export class BrowserManager {
       }
     }
     const p = this.page(i, a.page_id);
+    if (['navigate', 'interact', 'upload_file'].includes(name)) i.activePageId = a.page_id;
     if (name === 'close_page') {
       await p.page.close();
       return { status: 'closed' };

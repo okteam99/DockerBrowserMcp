@@ -1,6 +1,6 @@
-# MCP 接口 V0.1
+# MCP 接口 V0.2
 
-传输为 MCP stdio，通过 SSH 或 docker exec 接入，不提供公网 HTTP MCP。认证和接入由 SSH / Docker 权限负责。
+推荐使用 `BASE_URL/mcp` 的 Streamable HTTP，携带 `Authorization: Bearer <登录网页自动生成的 Token>`。网页登录后可复制完整配置。兼容 MCP stdio，通过 SSH 或 docker exec 接入。HTTP 调用共享 web principal，stdio 仍按 MCP_PRINCIPAL 隔离。
 
 全部参数和默认值见 [机器可读 Schema](mcp-tools.json)，可通过标准 MCP `tools/list` 实时发现。以下展示工具 arguments，不是 HTTP 请求。
 
@@ -21,6 +21,7 @@
 
 | 工具 | 输入 | 输出要点 |
 | --- | --- | --- |
+| `list_recordings` | 可选 instance_id | 当前 principal 的录像、状态、playback_url；播放仍需网页登录或相同 Bearer |
 | `health` | `{}` | 服务状态与容量 |
 | `list_proxies` | `{}` | proxy_ref、server、country、鉴权标记，不返回密码 |
 | `check_proxy` | proxy 或 proxy_ref；可选 check_url | 临时浏览器查询出口，始终清理；不能混用两种代理参数 |
@@ -118,3 +119,18 @@ artifact_id 不接受任意文件路径。get_artifact 按 next_offset 继续读
 同实例一次只允许一个执行中的操作，其他实例可并行。close_instance 可强制结束正在运行的操作。get_operation 可查询当前管理进程最近500个调用；不能当作跨进程重启的永久幂等机制。服务不会自动重试点击或提交。
 
 当前不支持外部 cancel 操作；可通过 close_instance 中止该实例。工具最长单步等待受配置限制，MCP 接入等待管理进程最多180秒，超时后原操作可能仍运行，需检查状态。
+
+## 管理与媒体 HTTP 路由
+
+所有地址均相对于 BASE_URL。`/` 为密码登录及说明/监看页；`POST /login`、`POST /logout` 管理 Cookie 会话。`GET /healthz` 仅返回无敏感信息的存活状态。
+
+以下路由均需要登录 Cookie 或相同 Bearer Token：
+
+- `GET /api/connection`：自动生成的 MCP URL、JSON 配置、完整 Agent 接入说明。
+- `GET /api/instances`：管理员可查看全部活跃实例及容量。
+- `GET /api/instances/{instance_id}/live`：MJPEG 低帧率直播。
+- `GET /api/recordings`：历史录像。
+- `GET /api/recordings/{recording_id}/video`：WebM 播放/下载，支持 Range；录像未完成返回 409。
+- `GET /docs/README.md`、`/docs/mcp-api.md`、`/docs/mcp-tools.json`、`/docs/agent-workflow.md`：完整文档。
+
+`POST /mcp` 只接受 Bearer 鉴权，不使用 Cookie。密码变更并重启后 Token 轮换；不把 Token 放在 URL 中。直播和录屏包含可见业务内容，请仅授权可信使用方。

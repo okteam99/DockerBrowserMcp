@@ -10,7 +10,13 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 test('MCP stdio discovery, operation lookup, artifact transfer, reconnect and principal isolation', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'mcp-protocol-'));
   const socket = join(dir, 'service.sock');
-  const env = { ...process.env, DATA_DIR: dir, MCP_SOCKET: socket };
+  const env = {
+    ...process.env,
+    DATA_DIR: dir,
+    MCP_SOCKET: socket,
+    WEB_PORT: '0',
+    RECORD_VIDEO: 'false',
+  };
   const daemon = spawn(process.execPath, ['dist/cli.js', 'daemon'], {
     env,
     stdio: ['ignore', 'ignore', 'pipe'],
@@ -43,7 +49,7 @@ test('MCP stdio discovery, operation lookup, artifact transfer, reconnect and pr
     assert.ok(ready, logs);
     a = await connect('alice');
     const tools = await a.listTools();
-    assert.equal(tools.tools.length, 24);
+    assert.equal(tools.tools.length, 25);
     const call = async (c: Client, name: string, args: any = {}) => {
       const r: any = await c.callTool({ name, arguments: args });
       return JSON.parse(r.content[0].text);

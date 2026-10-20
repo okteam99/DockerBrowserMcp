@@ -1,6 +1,28 @@
 {
   "tools": [
     {
+      "name": "list_recordings",
+      "description": "List retained recordings for this principal, optionally filtered by instance. Playback URLs require web login or the MCP Bearer token.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "instance_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
       "name": "list_operations",
       "description": "List recent operation IDs and statuses for this principal after reconnect, including running actions. Does not expose arguments.",
       "inputSchema": {

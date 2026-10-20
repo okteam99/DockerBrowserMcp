@@ -21,6 +21,12 @@ export const definitions: Record<
   string,
   { description: string; schema: z.ZodTypeAny; readOnly?: boolean }
 > = {
+  list_recordings: {
+    description:
+      'List retained recordings for this principal, optionally filtered by instance. Playback URLs require web login or the MCP Bearer token.',
+    schema: z.object({ instance_id: z.string().optional() }),
+    readOnly: true,
+  },
   list_operations: {
     description:
       'List recent operation IDs and statuses for this principal after reconnect, including running actions. Does not expose arguments.',
