@@ -1253,3 +1253,52 @@ input {
 .welcome-copy h3.ant-typography {
   color: #172238;
 }
+
+.public-viewer {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 36px 24px;
+}
+.public-viewer-heading {
+  margin-bottom: 28px;
+}
+.public-viewer-card {
+  box-shadow: 0 12px 48px #1029550a;
+}
+.public-viewer-media {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+  background: #0b1427;
+  border-radius: 10px;
+  margin: 24px 0;
+  overflow: hidden;
+}
+.public-viewer-media img,
+.public-viewer-media video {
+  display: block;
+  width: 100%;
+  max-height: 72vh;
+  object-fit: contain;
+}
+.public-viewer-media .ant-empty-description,
+.public-viewer-waiting {
+  color: #b6c5de;
+}
+.public-viewer-waiting {
+  position: absolute;
+}
+@media (max-width: 600px) {
+  .public-viewer {
+    padding: 20px 12px;
+  }
+  .public-viewer-card .ant-card-body {
+    padding: 16px;
+  }
+  .public-viewer-media {
+    min-height: 230px;
+    margin: 18px 0;
+  }
+}

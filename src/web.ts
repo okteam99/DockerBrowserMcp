@@ -1,6 +1,5 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -9,8 +8,9 @@ import type { BrowserManager } from './browser.js';
 import { WebAuth } from './auth.js';
 import { createMcpServer, type Dispatch } from './mcp.js';
 import { definitions } from './tools.js';
-import { dashboard, loginPage } from './web-ui.js';
+import { dashboard, loginPage, sharePage } from './web-ui.js';
 import { publicError } from './errors.js';
+import { liveMedia, videoMedia } from './media.js';
 
 async function body(req: IncomingMessage, limit = 1048576) {
   const chunks: Buffer[] = [];
@@ -104,7 +104,7 @@ export async function startWeb(manager: BrowserManager, cfg: Config, dispatch: D
         return;
       }
       if (path === '/healthz') {
-        json(res, { status: 'ok', version: '0.3.1' });
+        json(res, { status: 'ok', version: '0.4.0' });
         return;
       }
       if (path === '/mcp') {
@@ -162,6 +162,63 @@ export async function startWeb(manager: BrowserManager, cfg: Config, dispatch: D
         res.end(session ? dashboard(prefix, session) : loginPage(prefix));
         return;
       }
+      const shared = /^\/share\/([A-Za-z0-9_-]{43})(?:\/(media|status))?$/.exec(path);
+      if (shared && ['GET', 'HEAD'].includes(req.method ?? '')) {
+        res.setHeader('referrer-policy', 'no-referrer');
+        res.setHeader('x-robots-tag', 'noindex, nofollow, noarchive');
+        const grant = manager.shares.resolve(shared[1]);
+        const allowed = () => Boolean(manager.shares.resolve(shared[1]));
+        let state: 'live' | 'ready' | 'ended' | 'unavailable' = 'unavailable';
+        if (grant?.kind === 'live') {
+          const instance = manager.instances.get(grant.resource_id);
+          state =
+            instance &&
+            instance.owner === grant.owner &&
+            !instance.closing &&
+            !instance.crashed &&
+            manager.recordings.active.has(instance.id)
+              ? 'live'
+              : 'ended';
+        } else if (grant) {
+          const recording = await manager.recordings.get(grant.resource_id).catch(() => null);
+          if (
+            recording &&
+            recording.meta.owner === grant.owner &&
+            !['recording', 'finalizing'].includes(recording.meta.status) &&
+            (await stat(recording.path).catch(() => null))?.size
+          )
+            state = 'ready';
+        }
+        if (!grant || !allowed()) {
+          if (!shared[2]) {
+            res.statusCode = 404;
+            res.setHeader('content-type', 'text/html; charset=utf-8');
+            res.end(req.method === 'HEAD' ? undefined : sharePage(prefix));
+          } else json(res, { error: 'Share link unavailable' }, 404);
+          return;
+        }
+        const view = {
+          kind: grant.kind,
+          state,
+          expires_at: grant.expires_at,
+          media_url: `${prefix}/share/${shared[1]}/media`,
+          status_url: `${prefix}/share/${shared[1]}/status`,
+        };
+        if (shared[2] === 'status') json(res, view);
+        else if (!shared[2]) {
+          res.setHeader('content-type', 'text/html; charset=utf-8');
+          res.end(req.method === 'HEAD' ? undefined : sharePage(prefix, view));
+        } else if (!['live', 'ready'].includes(state))
+          json(res, { error: state === 'ended' ? 'Live stream ended' : 'Media unavailable' }, 410);
+        else if (grant.kind === 'live') {
+          if (req.method !== 'GET') {
+            res.statusCode = 405;
+            res.setHeader('allow', 'GET');
+            res.end();
+          } else liveMedia(manager, cfg, res, streams, grant.resource_id, allowed);
+        } else await videoMedia(manager, req, res, grant.resource_id, allowed);
+        return;
+      }
       if (!authorized) {
         json(res, { error: 'Authentication required' }, 401);
         return;
@@ -195,7 +252,7 @@ export async function startWeb(manager: BrowserManager, cfg: Config, dispatch: D
         };
         const workflow = await readFile(`${docsRoot}docs/agent-workflow.md`, 'utf8');
         const api = await readFile(`${docsRoot}docs/mcp-api.md`, 'utf8');
-        const agent_instructions = `# DockerBrowserMcp 远程浏览器接入\n\n服务: ${baseUrl}\nMCP: ${mcpUrl}\n传输: Streamable HTTP（非旧 SSE），支持的 MCP 客户端使用 HTTP POST。\n鉴权: Authorization: Bearer ${auth.token}\n\n此 Token 可控制浏览器及读取录屏，请仅在该服务使用。\n\n## MCP 配置\n\n${JSON.stringify(mcp_config, null, 2)}\n\n## 接入约定\n\n配置此 MCP 后先调用 health 和 tools/list。创建浏览器时可指定 user_agent、viewport、proxy（含 server、username、password）或 proxy_ref；默认最多 ${cfg.maxInstances} 个并发实例。\n实例直播与历史录像: ${baseUrl}/ （网页登录）。录屏可通过 list_recordings 查询，用相同 Bearer 鉴权获取 playback_url。\n\nMCP Schema: ${baseUrl}/docs/mcp-tools.json （需相同 Authorization 头）\n完整使用文档: ${baseUrl}/docs/README.md\n\n${workflow}\n\n${api}`;
+        const agent_instructions = `# DockerBrowserMcp 远程浏览器接入\n\n服务: ${baseUrl}\nMCP: ${mcpUrl}\n传输: Streamable HTTP（非旧 SSE），支持的 MCP 客户端使用 HTTP POST。\n鉴权: Authorization: Bearer ${auth.token}\n\n此 Token 可控制浏览器及读取录屏，请仅在该服务使用。\n\n## MCP 配置\n\n${JSON.stringify(mcp_config, null, 2)}\n\n## 接入约定\n\n配置此 MCP 后先调用 health 和 tools/list。创建浏览器时可指定 user_agent、viewport、proxy（含 server、username、password）或 proxy_ref；默认最多 ${cfg.maxInstances} 个并发实例。\n实例直播与历史录像: ${baseUrl}/ （网页登录）。录屏可通过 list_recordings 查询，用相同 Bearer 鉴权获取 playback_url。用户需要公开观看时，调用 create_share_link 生成独立只读直播/录像链接；可设有效期，用 revoke_share_link 撤销。\n\nMCP Schema: ${baseUrl}/docs/mcp-tools.json （需相同 Authorization 头）\n完整使用文档: ${baseUrl}/docs/README.md\n\n${workflow}\n\n${api}`;
         json(res, {
           base_url: baseUrl,
           mcp_url: mcpUrl,
@@ -229,100 +286,15 @@ export async function startWeb(manager: BrowserManager, cfg: Config, dispatch: D
         return;
       }
       const live = /^\/api\/instances\/(ins_[a-f0-9-]{36})\/live$/.exec(path);
+      const allowed = () =>
+        Boolean(auth.cookie(req.headers.cookie) || auth.bearer(req.headers.authorization));
       if (live && req.method === 'GET') {
-        if (!manager.recordings.active.has(live[1])) {
-          json(res, { error: 'Instance not active' }, 404);
-          return;
-        }
-        if (streams.size >= 50) {
-          json(res, { error: 'Too many live viewers' }, 429);
-          return;
-        }
-        streams.add(res);
-        res.setHeader('content-type', 'multipart/x-mixed-replace; boundary=frame');
-        res.setHeader('x-accel-buffering', 'no');
-        res.flushHeaders();
-        let last = 0;
-        const tick = () => {
-          if (!auth.cookie(req.headers.cookie) && !auth.bearer(req.headers.authorization)) {
-            res.end();
-            return;
-          }
-          const recorder = manager.recordings.active.get(live[1]);
-          if (!recorder) {
-            res.end();
-            return;
-          }
-          const f = recorder.latest;
-          if (!f || f.time === last) return;
-          if (res.writableLength > 1048576) {
-            res.destroy();
-            return;
-          }
-          last = f.time;
-          res.write(
-            `--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${f.bytes.length}\r\n\r\n`,
-          );
-          res.write(f.bytes);
-          res.write('\r\n');
-        };
-        const timer = setInterval(tick, Math.max(100, 1000 / cfg.videoFps));
-        timer.unref();
-        res.once('close', () => {
-          clearInterval(timer);
-          streams.delete(res);
-        });
-        tick();
+        liveMedia(manager, cfg, res, streams, live[1], allowed);
         return;
       }
       const video = /^\/api\/recordings\/(rec_[a-f0-9-]{36})\/video$/.exec(path);
       if (video && ['GET', 'HEAD'].includes(req.method ?? '')) {
-        const { meta, path: file } = await manager.recordings.get(video[1]);
-        if (['recording', 'finalizing'].includes(meta.status)) {
-          json(res, { error: 'Recording is still active' }, 409);
-          return;
-        }
-        const info = await stat(file).catch(() => null);
-        if (!info || !info.size) {
-          json(res, { error: 'Recording file unavailable' }, 404);
-          return;
-        }
-        let start = 0,
-          end = info.size - 1;
-        const range = req.headers.range;
-        if (range) {
-          const match = /^bytes=(\d*)-(\d*)$/.exec(range);
-          if (!match || (!match[1] && !match[2])) {
-            res.setHeader('content-range', `bytes */${info.size}`);
-            res.statusCode = 416;
-            res.end();
-            return;
-          }
-          if (!match[1]) start = Math.max(0, info.size - Number(match[2]));
-          else {
-            start = Number(match[1]);
-            if (match[2]) end = Math.min(end, Number(match[2]));
-          }
-          if (!Number.isSafeInteger(start) || start > end || start >= info.size) {
-            res.setHeader('content-range', `bytes */${info.size}`);
-            res.statusCode = 416;
-            res.end();
-            return;
-          }
-          res.statusCode = 206;
-          res.setHeader('content-range', `bytes ${start}-${end}/${info.size}`);
-        }
-        res.setHeader('content-type', 'video/webm');
-        res.setHeader('accept-ranges', 'bytes');
-        res.setHeader('content-length', end - start + 1);
-        if (req.method === 'HEAD') {
-          res.end();
-          return;
-        }
-        const stream = createReadStream(file, { start, end });
-        stream.on('error', () => res.destroy());
-        res.once('close', () => stream.destroy());
-        stream.pipe(res);
+        await videoMedia(manager, req, res, video[1], allowed);
         return;
       }
       json(res, { error: 'Not found' }, 404);

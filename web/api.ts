@@ -1,6 +1,13 @@
 export type Bootstrap = {
   base: string;
-  screen: 'login' | 'dashboard';
+  screen: 'login' | 'dashboard' | 'share';
+  share?: {
+    kind: 'live' | 'recording';
+    state: 'live' | 'ready' | 'ended' | 'unavailable';
+    expires_at: string;
+    media_url: string;
+    status_url: string;
+  };
   error: string;
   csrf: string;
 };

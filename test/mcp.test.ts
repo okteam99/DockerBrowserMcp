@@ -49,7 +49,7 @@ test('MCP stdio discovery, operation lookup, artifact transfer, reconnect and pr
     assert.ok(ready, logs);
     a = await connect('alice');
     const tools = await a.listTools();
-    assert.equal(tools.tools.length, 25);
+    assert.equal(tools.tools.length, 28);
     const call = async (c: Client, name: string, args: any = {}) => {
       const r: any = await c.callTool({ name, arguments: args });
       return JSON.parse(r.content[0].text);

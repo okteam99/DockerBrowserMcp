@@ -315,7 +315,7 @@ function Dashboard() {
                 <span className="status-dot" />
                 远程浏览器服务
               </div>
-              <Text>DockerBrowserMcp · v0.3</Text>
+              <Text>DockerBrowserMcp · v0.4</Text>
             </div>
           </Layout.Sider>
         )}
@@ -1336,6 +1336,122 @@ function DocsPage({ onConnect }: { onConnect: () => void }) {
     </Card>
   );
 }
+function PublicViewer() {
+  const [view, setView] = useState(bootstrap.share);
+  const [error, setError] = useState('');
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    if (!bootstrap.share) return;
+    let cancelled = false;
+    const controller = new AbortController();
+    const refresh = async () => {
+      try {
+        const response = await fetch(bootstrap.share!.status_url, {
+          cache: 'no-store',
+          credentials: 'omit',
+          signal: controller.signal,
+        });
+        if (cancelled) return;
+        if (response.status === 404) {
+          setView(undefined);
+          setError('');
+          return;
+        }
+        if (!response.ok) throw Error();
+        const next = await response.json();
+        if (!cancelled) {
+          setView(next);
+          setError('');
+        }
+      } catch {
+        if (!cancelled) setError('暂时无法连接，请刷新重试');
+      }
+    };
+    const timer = window.setInterval(() => void refresh(), 3000);
+    return () => {
+      cancelled = true;
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, []);
+  const active = view && ['live', 'ready'].includes(view.state);
+  return (
+    <main className="public-viewer">
+      <Flex align="center" justify="space-between" wrap gap={16} className="public-viewer-heading">
+        <Space size={12}>
+          <Avatar
+            shape="square"
+            size={44}
+            icon={<DesktopOutlined />}
+            style={{ background: '#2463eb' }}
+          />
+          <div>
+            <Title level={4} style={{ margin: 0 }}>
+              DockerBrowser
+            </Title>
+            <Text type="secondary">AI 浏览器 · 公开观看</Text>
+          </div>
+        </Space>
+        <Tag icon={<LockOutlined />}>仅可观看</Tag>
+      </Flex>
+      <Card className="public-viewer-card">
+        <Flex justify="space-between" align="center" wrap gap={12}>
+          <Title level={3} style={{ margin: 0 }}>
+            {view?.kind === 'recording' ? '操作录像' : '浏览器直播'}
+          </Title>
+          <Badge
+            status={active ? (view?.kind === 'live' ? 'processing' : 'success') : 'default'}
+            text={active ? (view?.kind === 'live' ? '正在直播' : '可回放') : '已结束'}
+          />
+        </Flex>
+        <div className="public-viewer-media">
+          {active ? (
+            view.kind === 'live' ? (
+              <>
+                <img
+                  src={view.media_url}
+                  alt="浏览器实时画面"
+                  onLoad={() => setLoaded(true)}
+                  onError={() => setError('直播暂时中断，请刷新重试')}
+                />
+                {!loaded && <Text className="public-viewer-waiting">正在连接直播画面…</Text>}
+              </>
+            ) : (
+              <video
+                src={view.media_url}
+                controls
+                playsInline
+                preload="metadata"
+                onError={() => setError('录像暂时无法播放，请刷新重试')}
+              />
+            )
+          ) : (
+            <Empty
+              description={
+                !view
+                  ? '链接已失效、已过期或已撤销'
+                  : view.state === 'ended'
+                    ? '本次直播已结束'
+                    : '录像已清理或暂不可用'
+              }
+            />
+          )}
+        </div>
+        {error && <Alert type="warning" showIcon title={error} style={{ marginBottom: 16 }} />}
+        <Flex justify="space-between" wrap gap={8}>
+          <Text type="secondary">
+            {view?.kind === 'live' ? '实时观看 AI 的浏览器操作' : '回看 AI 的完整操作过程'}
+          </Text>
+          {view && (
+            <Text type="secondary">
+              链接有效期至 {new Date(view.expires_at).toLocaleString('zh-CN')}
+            </Text>
+          )}
+        </Flex>
+      </Card>
+    </main>
+  );
+}
 createRoot(document.getElementById('root')!).render(
   <ConfigProvider
     locale={zhCN}
@@ -1363,6 +1479,14 @@ createRoot(document.getElementById('root')!).render(
       },
     }}
   >
-    <App>{bootstrap.screen === 'login' ? <Login /> : <Dashboard />}</App>
+    <App>
+      {bootstrap.screen === 'login' ? (
+        <Login />
+      ) : bootstrap.screen === 'share' ? (
+        <PublicViewer />
+      ) : (
+        <Dashboard />
+      )}
+    </App>
   </ConfigProvider>,
 );

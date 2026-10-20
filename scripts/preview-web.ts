@@ -47,6 +47,13 @@ await client.callTool({
   },
 });
 console.log('Preview instance created:', i.instance_id);
+if (process.env.PREVIEW_SHARE === 'true') {
+  const shared: any = await client.callTool({
+    name: 'create_share_link',
+    arguments: { kind: 'live', instance_id: i.instance_id, expires_in_seconds: 3600 },
+  });
+  console.log('Public preview:', JSON.parse(shared.content[0].text).data.url);
+}
 let stopping = false;
 const stop = async () => {
   if (stopping) return;

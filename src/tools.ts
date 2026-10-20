@@ -21,6 +21,36 @@ export const definitions: Record<
   string,
   { description: string; schema: z.ZodTypeAny; readOnly?: boolean }
 > = {
+  create_share_link: {
+    description:
+      'Create an expiring public read-only viewer URL for one owned live instance or finalized recording. Anyone with this link can see its content without login; it grants no browser control or access to other resources. Returns URL once. Default 24 hours, maximum 30 days. Requires web mode.',
+    schema: z
+      .object({
+        kind: z.enum(['live', 'recording']),
+        instance_id: id.optional(),
+        recording_id: id.optional(),
+        expires_in_seconds: z.number().int().min(1).max(2592000).default(86400),
+      })
+      .strict()
+      .refine(
+        (a) =>
+          a.kind === 'live'
+            ? Boolean(a.instance_id) && !a.recording_id
+            : Boolean(a.recording_id) && !a.instance_id,
+        'live requires only instance_id; recording requires only recording_id',
+      ),
+  },
+  list_share_links: {
+    description:
+      'List retained share metadata for this principal, including expiry and revocation status. Secret URLs are returned only at creation.',
+    schema: z.object({}).strict(),
+    readOnly: true,
+  },
+  revoke_share_link: {
+    description:
+      'Revoke an owned public share link. Subsequent requests are denied and connected live viewers are disconnected within one second. Already downloaded content cannot be recalled.',
+    schema: z.object({ share_id: z.string().regex(/^shr_[a-f0-9-]{36}$/) }).strict(),
+  },
   list_recordings: {
     description:
       'List retained recordings for this principal, optionally filtered by instance. Playback URLs require web login or the MCP Bearer token.',

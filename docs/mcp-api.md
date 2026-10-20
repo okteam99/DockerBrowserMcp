@@ -1,4 +1,4 @@
-# MCP 接口 V0.3
+# MCP 接口 V0.4
 
 推荐使用 `BASE_URL/mcp` 的 Streamable HTTP，携带 `Authorization: Bearer <登录网页自动生成的 Token>`。网页登录后可复制完整配置。兼容 MCP stdio，通过 SSH 或 docker exec 接入。HTTP 调用共享 web principal，stdio 仍按 MCP_PRINCIPAL 隔离。
 
@@ -45,6 +45,32 @@
   "max_lifetime_seconds": 3600
 }
 ```
+
+## 公开观看链接
+
+| 工具 | 输入 | 输出 |
+| --- | --- | --- |
+| `create_share_link` | kind=live + instance_id，或 kind=recording + recording_id；可选 expires_in_seconds（默认86400，1–2592000） | share_id、kind、resource_id、status、created_at、expires_at、url、media_url、access=public_read_only |
+| `list_share_links` | `{}` | 当前 principal 的分享元信息；不返回链接密钥或 URL |
+| `revoke_share_link` | share_id | 撤销后的元信息，重复撤销仍成功 |
+
+```json
+{"kind":"live","instance_id":"ins_...","expires_in_seconds":3600}
+```
+
+```json
+{"kind":"recording","recording_id":"rec_...","expires_in_seconds":86400}
+```
+
+同一实例可生成多个独立链接。公开链接无需登录，持有者可以观看对应内容；Agent 应在用户要求公开分享时调用。链接只读，不授权 MCP、控制台或其他实例。`url` 为手机/桌面观看页，`media_url` 可用于 MJPEG/WebM 媒体访问，录像支持 HEAD/Range。
+
+直播必须属于当前 principal 且正在运行；直播结束不自动开放录像。录像必须属于当前 principal、已完成写入且文件非空，可先关闭实例，再调用 `list_recordings` 获取 ID。录像提前被清理时链接不可用。
+
+有效期默认24小时、最多30天，同时最多1000个有效链接。密钥256位随机，仅保存 SHA-256 摘要；完整 URL 仅在创建结果中返回（该次操作结果在内存保留期间可通过 `get_operation` 找回）。授权和撤销状态保存于数据卷，重启后有效；管理密码变化不影响已发出的分享，需显式撤销。新建分享时会清除过期/已撤销元信息。
+
+撤销或到期后，后续访问返回404，已有直播连接在1秒内断开；已下载/已缓冲内容无法收回。观看页状态约3秒刷新一次。直播正常结束的媒体请求返回410，观看页显示已结束。
+
+无需登录的路由仅有：`GET /share/{随机密钥}`、`GET /share/{随机密钥}/status`、`GET /share/{随机密钥}/media`（录像另支持 HEAD）。密钥不能替换为 MCP Token，也不能作为 MCP Bearer 使用。公开页不返回代理信息、原网页 URL、控制台凭证或其他资源列表。静态资源和健康检查仍保持原有访问策略。
 
 ## 页面与定位
 
@@ -115,6 +141,8 @@ artifact_id 不接受任意文件路径。get_artifact 按 next_offset 继续读
 - DOWNLOAD_FAILED / DOWNLOAD_TOO_LARGE / DOWNLOAD_NOT_FOUND
 - ARTIFACT_NOT_FOUND / ARTIFACT_TOO_LARGE / STORAGE_LIMIT
 - DIALOG_NOT_FOUND / OPERATION_NOT_FOUND / OPERATION_FAILED
+- SHARING_DISABLED / LIVE_UNAVAILABLE / SHARE_LIMIT / SHARE_NOT_FOUND
+- RECORDING_NOT_READY / RECORDING_NOT_FOUND
 
 同实例一次只允许一个执行中的操作，其他实例可并行。close_instance 可强制结束正在运行的操作。get_operation 可查询当前管理进程最近500个调用；不能当作跨进程重启的永久幂等机制。服务不会自动重试点击或提交。
 

@@ -18,7 +18,7 @@ docker run -d --init \
   -e WEB_PASSWORD='替换为你的强密码' \
   -e MAX_INSTANCES=10 \
   -v browser-mcp-data:/data \
-  bdpgogoup/dockerbrowsermcp:20261020203319
+  bdpgogoup/dockerbrowsermcp:20261020205051
 ```
 
 `BASE_URL` 是用户或 Agent 实际访问的外网地址；由部署方确保 DNS、反向代理、HTTPS 或端口映射已接通容器 8080。服务不会自动申请证书或创建隧道。本机试用可用 `BASE_URL=http://localhost:8080`。
@@ -110,6 +110,34 @@ Agent 必须支持远程 Streamable HTTP MCP 及自定义 Authorization 请求�
 
 录像会包含浏览器中可见的输入与业务内容。通过 `RECORD_VIDEO=false` 可关闭历史录像，实时预览仍可用。产物和录像保存在 `/data`，需挂载数据卷。
 
+## 公开直播与录像分享
+
+Agent 可通过 MCP 创建无需登录的只读观看链接；链接使用 `BASE_URL`，支持部署路径前缀。观看者只能看到指定实例的活动页面或指定录像，不能操作浏览器或访问控制台。
+
+直播（实例运行中调用）：
+
+```json
+{"kind":"live","instance_id":"ins_...","expires_in_seconds":3600}
+```
+
+录像（先 `close_instance`，再用 `list_recordings` 找到 `recording_id`）：
+
+```json
+{"kind":"recording","recording_id":"rec_...","expires_in_seconds":86400}
+```
+
+以上为 `create_share_link` 的 arguments。成功返回 `share_id`、`url`（观看页）、`media_url`（MJPEG 或 WebM）、`expires_at`。把 `url` 直接发给观看者即可，手机和桌面浏览器均可打开，录像支持播放、拖动和下载。
+
+- 有效期默认 24 小时，可设 1 秒至 30 天；最多 1000 个有效分享。
+- `list_share_links {}` 查询当前 principal 的分享元信息；链接秘密仅在创建结果中返回，可用该次 `get_operation` 找回尚未从内存淘汰的结果。
+- `revoke_share_link {"share_id":"shr_..."}` 撤销；后续访问立即拒绝，已连接直播在 1 秒内断开。已下载或已缓冲的画面无法收回。
+- 直播结束后显示已结束，不会自动开放录像；录像需独立创建分享。未完成或文件为空的录像不能分享。
+- 分享授权保存在 `/data/shares.json`，仅存随机密钥的 SHA-256 摘要。同一数据卷重启后仍有效；修改管理密码不会撤销分享，请按需显式撤销。
+- 分享到期不延长录像保留时间。录像被配额或保留期清理后，观看页显示不可用。新建分享时自动清除过期或已撤销的分享元信息。
+- 链接本身就是观看凭证，持有者无需密码。分享前确认画面可公开；链接不包含管理员 MCP Token，不提供浏览器操作权限。
+
+纯 stdio 模式（`WEB_PORT=0`）无法提供公开观看链接。反向代理需要允许 `/share/` 路径，并对直播关闭缓冲。
+
 ## 并发与运行配置
 
 **默认最多 10 个并发浏览器实例**，超过直接返回 `INSTANCE_LIMIT`，不无限排队。可通过 `-e MAX_INSTANCES=5` 等修改。上限不是预分配数量，建议先在实际网站上测量内存；10 个实例应预留相应服务器资源。
@@ -180,10 +208,10 @@ bash scripts/publish-docker.sh
 ## 源码构建及 stdio 接入
 
 ```sh
-docker build -t docker-browser-mcp:0.3.1 .
+docker build -t docker-browser-mcp:0.4.0 .
 ```
 
-将一行部署命令最后的镜像名换成 `docker-browser-mcp:0.3.1` 即可本地使用。
+将一行部署命令最后的镜像名换成 `docker-browser-mcp:0.4.0` 即可本地使用。
 
 兼容配置见 [本地 stdio](examples/mcp.local.json)、[SSH stdio](examples/mcp.ssh.json)。仍使用 `docker exec -i`，不得使用 `-t`。MCP_PRINCIPAL 是可信 SSH/Docker 接入中的命名空间，不是独立认证。
 

@@ -1,6 +1,66 @@
 {
   "tools": [
     {
+      "name": "create_share_link",
+      "description": "Create an expiring public read-only viewer URL for one owned live instance or finalized recording. Anyone with this link can see its content without login; it grants no browser control or access to other resources. Returns URL once. Default 24 hours, maximum 30 days. Requires web mode.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "list_share_links",
+      "description": "List retained share metadata for this principal, including expiry and revocation status. Secret URLs are returned only at creation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "revoke_share_link",
+      "description": "Revoke an owned public share link. Subsequent requests are denied and connected live viewers are disconnected within one second. Already downloaded content cannot be recalled.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "share_id": {
+            "type": "string",
+            "pattern": "^shr_[a-f0-9-]{36}$"
+          }
+        },
+        "required": [
+          "share_id"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
       "name": "list_recordings",
       "description": "List retained recordings for this principal, optionally filtered by instance. Playback URLs require web login or the MCP Bearer token.",
       "inputSchema": {

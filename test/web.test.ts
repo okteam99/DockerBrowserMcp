@@ -157,6 +157,8 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
         'Deployment command should use readable shell continuations',
       );
       await page.setViewportSize({ width: 390, height: 844 });
+      await page.getByRole('button', { name: '打开导航' }).waitFor();
+      await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth + 1);
       assert.ok(
         await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
         'Mobile layout must not overflow horizontally',
@@ -194,7 +196,7 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
         requestInit: { headers: auth },
       }),
     );
-    assert.equal((await client.listTools()).tools.length, 25);
+    assert.equal((await client.listTools()).tools.length, 28);
     const call = async (name: string, args: any = {}) => {
       const r: any = await client!.callTool({ name, arguments: args });
       return JSON.parse(r.content[0].text);
@@ -225,6 +227,82 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
       },
       undefined,
       { timeout: 10000 },
+    );
+
+    const liveShare = (await call('create_share_link', { kind: 'live', instance_id: id })).data;
+    assert.ok(liveShare.url.startsWith(base + '/share/'));
+    assert.equal(liveShare.access, 'public_read_only');
+    assert.equal(
+      (
+        await call('create_share_link', {
+          kind: 'recording',
+          recording_id: result.data.recording_id,
+        })
+      ).error.code,
+      'RECORDING_NOT_READY',
+    );
+    const publicContext = await viewer.newContext({ viewport: { width: 390, height: 844 } });
+    const publicPage = await publicContext.newPage();
+    const protectedRequests: string[] = [];
+    publicPage.on('request', (r) => {
+      if (new URL(r.url()).pathname.includes('/api/')) protectedRequests.push(r.url());
+    });
+    await publicPage.goto(liveShare.url);
+    await publicPage.getByText('仅可观看').waitFor();
+    await publicPage.waitForFunction(
+      () =>
+        (document.querySelector('.public-viewer-media img') as HTMLImageElement)?.naturalWidth > 0,
+    );
+    assert.equal(await publicPage.locator('nav').count(), 0);
+    assert.deepEqual(protectedRequests, []);
+    assert.equal(
+      await publicPage
+        .locator('body')
+        .evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+    );
+    const publicHtml = await fetch(liveShare.url);
+    assert.equal(publicHtml.headers.get('referrer-policy'), 'no-referrer');
+    assert.match(publicHtml.headers.get('x-robots-tag')!, /noindex/);
+    assert.ok(!(await publicHtml.text()).includes(auth.Authorization));
+    const shareToken = liveShare.url.split('/').at(-1)!;
+    assert.equal(
+      (
+        await fetch(base + '/api/connection', {
+          headers: { Authorization: `Bearer ${shareToken}` },
+        })
+      ).status,
+      401,
+    );
+    assert.equal(
+      (
+        await fetch(base + '/mcp', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${shareToken}` },
+          body: '{}',
+        })
+      ).status,
+      401,
+    );
+    assert.equal((await fetch(base + '/share/' + 'a'.repeat(43))).status, 404);
+    assert.equal(
+      (await fetch(base + '/share/' + 'a'.repeat(43) + '/media', { headers: auth })).status,
+      404,
+    );
+    const revokeShare = (await call('create_share_link', { kind: 'live', instance_id: id })).data;
+    const publicLive = await fetch(revokeShare.media_url, { signal: AbortSignal.timeout(5000) });
+    const publicReader = publicLive.body!.getReader();
+    assert.equal((await publicReader.read()).done, false);
+    assert.equal(
+      (await call('revoke_share_link', { share_id: revokeShare.share_id })).data.status,
+      'revoked',
+    );
+    while (!(await publicReader.read()).done) {
+      /* Drain already buffered frames until the connection closes. */
+    }
+    assert.equal((await fetch(revokeShare.media_url)).status, 404);
+    assert.ok(
+      (await call('list_share_links')).data.some((s: any) => s.share_id === liveShare.share_id),
     );
 
     const api: any = await (await fetch(base + '/api/instances', { headers })).json();
@@ -275,6 +353,41 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
     assert.equal(part.status, 206);
     assert.equal(Buffer.from(await part.arrayBuffer()).toString('hex'), '1a45dfa3');
     assert.equal((await call('list_recordings')).data[0].id, history[0].id);
+    assert.equal(((await (await fetch(liveShare.url + '/status')).json()) as any).state, 'ended');
+    assert.equal((await fetch(liveShare.media_url)).status, 410);
+    const recordingShare = (
+      await call('create_share_link', {
+        kind: 'recording',
+        recording_id: history[0].id,
+        expires_in_seconds: 3600,
+      })
+    ).data;
+    const sharedPart = await fetch(recordingShare.media_url, { headers: { Range: 'bytes=0-3' } });
+    assert.equal(sharedPart.status, 206);
+    assert.equal(Buffer.from(await sharedPart.arrayBuffer()).toString('hex'), '1a45dfa3');
+    const sharedHead = await fetch(recordingShare.media_url, { method: 'HEAD' });
+    assert.equal(sharedHead.status, 200);
+    assert.equal(Number(sharedHead.headers.get('content-length')), history[0].bytes);
+    await publicPage.goto(recordingShare.url);
+    await publicPage.getByRole('heading', { name: '操作录像' }).waitFor();
+    await publicPage.waitForFunction(() => (document.querySelector('video')?.videoWidth ?? 0) > 0);
+    const expiring = (
+      await call('create_share_link', {
+        kind: 'recording',
+        recording_id: history[0].id,
+        expires_in_seconds: 1,
+      })
+    ).data;
+    assert.equal((await fetch(expiring.url + '/status')).status, 200);
+    await new Promise((r) => setTimeout(r, 1100));
+    assert.equal((await fetch(expiring.url + '/status')).status, 404);
+    await call('revoke_share_link', { share_id: recordingShare.share_id });
+    await publicPage.getByText('链接已失效、已过期或已撤销').waitFor({ timeout: 10000 });
+    assert.equal(await publicPage.locator('video').count(), 0);
+    await publicContext.close();
+    const persistentShare = (
+      await call('create_share_link', { kind: 'recording', recording_id: history[0].id })
+    ).data;
 
     await viewerPage.getByRole('menuitem', { name: '历史录屏' }).click();
     await viewerPage.getByRole('button', { name: '播放录像' }).click();
@@ -304,6 +417,9 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
     assert.equal(((await persisted.json()) as any[]).length, recordingsBefore);
     const range = await fetch(playback, { headers: { ...auth, Range: 'bytes=999999999999-' } });
     assert.equal(range.status, 416);
+    assert.equal((await fetch(persistentShare.media_url, { method: 'HEAD' })).status, 200);
+    assert.equal((await fetch(recordingShare.media_url)).status, 404);
+    assert.equal((await fetch(liveShare.media_url)).status, 410);
   } finally {
     await viewer?.close();
     await client?.close();

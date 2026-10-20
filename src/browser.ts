@@ -23,6 +23,7 @@ import {
 import { NetworkPolicy, createGateway } from './network.js';
 import { Artifacts } from './artifacts.js';
 import { RecordingStore } from './recordings.js';
+import { ShareStore } from './shares.js';
 import { ToolError, publicError, safeUrl } from './errors.js';
 
 type PageEntry = {
@@ -64,16 +65,19 @@ export class BrowserManager {
   artifacts: Artifacts;
   policy: NetworkPolicy;
   recordings: RecordingStore;
+  shares: ShareStore;
   private creating = 0;
   constructor(public cfg: Config) {
     this.artifacts = new Artifacts(cfg);
     this.policy = new NetworkPolicy(cfg);
     this.recordings = new RecordingStore(cfg);
+    this.shares = new ShareStore(cfg.dataDir);
   }
   async init() {
     await mkdir(this.cfg.dataDir, { recursive: true, mode: 0o700 });
     await this.artifacts.init();
     await this.recordings.init();
+    await this.shares.init();
     // The daemon holds its singleton lock before initialization. Remove orphaned download spools after restart.
     await rm(join(this.cfg.dataDir, 'sessions'), { recursive: true, force: true });
     await mkdir(join(this.cfg.dataDir, 'sessions'), { recursive: true, mode: 0o700 });
@@ -421,6 +425,38 @@ export class BrowserManager {
     await Promise.allSettled(Array.from(this.instances.values(), (i) => this.close(i.owner, i.id)));
   }
   async execute(owner: string, name: string, a: any): Promise<any> {
+    if (name === 'list_share_links') return this.shares.list(owner);
+    if (name === 'revoke_share_link') return this.shares.revoke(owner, a.share_id);
+    if (name === 'create_share_link') {
+      if (!this.cfg.webPort || !this.cfg.baseUrl)
+        throw new ToolError('SHARING_DISABLED', 'Public sharing requires web mode and BASE_URL.');
+      let resource: string;
+      if (a.kind === 'live') {
+        const i = this.instance(owner, a.instance_id);
+        if (!this.recordings.active.has(i.id))
+          throw new ToolError('LIVE_UNAVAILABLE', 'Live preview is unavailable for this instance.');
+        resource = i.id;
+      } else {
+        const { meta, path } = await this.recordings.get(a.recording_id);
+        if (meta.owner !== owner) throw new ToolError('RECORDING_NOT_FOUND', 'Unknown recording.');
+        if (['recording', 'finalizing'].includes(meta.status))
+          throw new ToolError(
+            'RECORDING_NOT_READY',
+            'Close the instance before sharing its recording.',
+          );
+        if (!(await stat(path).catch(() => null))?.size)
+          throw new ToolError('RECORDING_NOT_FOUND', 'Recording file unavailable.');
+        resource = meta.id;
+      }
+      const { token, ...metadata } = await this.shares.create(
+        owner,
+        a.kind,
+        resource,
+        a.expires_in_seconds,
+      );
+      const url = `${this.cfg.baseUrl.replace(/\/$/, '')}/share/${token}`;
+      return { ...metadata, url, media_url: url + '/media', access: 'public_read_only' };
+    }
     if (name === 'list_recordings')
       return (await this.recordings.list())
         .filter((r) => r.owner === owner && (!a.instance_id || r.instance_id === a.instance_id))
@@ -439,7 +475,7 @@ export class BrowserManager {
     if (name === 'health')
       return {
         status: 'ok',
-        version: '0.3.1',
+        version: '0.4.0',
         instances: this.instances.size,
         max_instances: this.cfg.maxInstances,
       };
