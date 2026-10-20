@@ -54,6 +54,7 @@ export async function startWeb(manager: BrowserManager, cfg: Config, dispatch: D
   const prefix = base.pathname.replace(/\/$/, '');
   const auth = new WebAuth();
   await auth.init(cfg.dataDir, cfg.webPassword);
+  manager.logs.registerSecret(auth.token);
   const streams = new Set<ServerResponse>();
   const server = http.createServer(async (req, res) => {
     res.setHeader('cache-control', 'no-store');
@@ -117,7 +118,7 @@ export async function startWeb(manager: BrowserManager, cfg: Config, dispatch: D
         return;
       }
       if (path === '/healthz') {
-        json(res, { status: 'ok', version: '0.5.1' });
+        json(res, { status: 'ok', version: '0.6.0' });
         return;
       }
       if (path === '/mcp') {

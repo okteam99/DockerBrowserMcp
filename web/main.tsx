@@ -315,7 +315,7 @@ function Dashboard() {
                 <span className="status-dot" />
                 远程浏览器服务
               </div>
-              <Text>DockerBrowserMcp · v0.5</Text>
+              <Text>DockerBrowserMcp · v0.6</Text>
             </div>
           </Layout.Sider>
         )}

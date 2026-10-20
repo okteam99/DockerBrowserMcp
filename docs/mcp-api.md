@@ -1,4 +1,4 @@
-# MCP 接口 V0.5
+# MCP 接口 V0.6
 
 推荐使用 `BASE_URL/mcp` 的 Streamable HTTP，携带 `Authorization: Bearer <登录网页自动生成的 Token>`。网页登录后可复制完整配置。兼容 MCP stdio，通过 SSH 或 docker exec 接入。HTTP 调用共享 web principal，stdio 仍按 MCP_PRINCIPAL 隔离。
 
@@ -130,6 +130,35 @@ artifact_id 不接受任意文件路径。get_artifact 按 next_offset 继续读
 
 诊断移除 URL 查询参数，不记录 console 原始字符串或响应正文，降低凭据泄漏风险；页面快照、最终 URL、截图和下载文件仍可能含敏感业务数据。
 
+## 持久化日志与实例诊断
+
+| 工具 | 输入 | 输出 |
+| --- | --- | --- |
+| `get_logs` | 可选 instance_id、operation_id(UUID)、component、level、since(ISO8601)、after_seq；limit 默认100，最多200 | entries、next_after_seq、has_more、oldest_available_seq、history_truncated、write_errors、last_write_error、dropped_events |
+| `inspect_instance` | instance_id；probe 默认true，timeout_ms 默认1500，100–5000 | instance 历史状态、live 实时状态、responsiveness、findings、resources、recent_logs |
+
+`component` 为 service/browser/page/operation/recorder/tunnel；`level` 为最低级别 info/warn/error。省略 after_seq 返回最近limit条；传入游标则按序读取后续事件，has_more=true表示仍有后续页。轮转导致的游标缺口通过 history_truncated 提示。
+
+```json
+{"instance_id":"ins_...","level":"warn","limit":100}
+```
+
+```json
+{"instance_id":"ins_...","probe":true,"timeout_ms":1500}
+```
+
+日志按 instance_id、operation_id 和时间关联，保存于 `/data/diagnostics`，默认7天、约16 MiB事件，结束实例快照最多1000份；先达到轮转/数量/保留期限制的记录先清理。get_logs在实例快照已清理但事件仍保留时仍可查询对应事件。日志只返回当前principal和通用服务事件，不支持任意文件读取。日志突发丢弃或写入故障会返回明确计数。
+
+inspect_instance和get_logs不占用浏览器执行锁；get_diagnostics也可在忙碌或已断开的活跃实例上读取。inspect_instance的探测仅执行固定只读检查，有独立截止时间，同一页面不会无限叠加探测。历史实例的live为null。探测超时只表示该检查没有按时返回，不等于已确定卡死根因。
+
+关闭原因包括 requested、idle_timeout、max_lifetime、browser_disconnected、service_shutdown、manager_interrupted、creation_failed；保留浏览器主进程PID、退出码/信号、最近操作、结束时的录屏状态。最大存活期在忙碌时也会执行；空闲超时仅在空闲时执行。
+
+资源指标包括管理进程RSS、宿主空闲内存/负载、可读时的cgroup内存及OOM计数、数据卷空间。非Linux、未设置内存限额或无权限时部分字段为null。SIGKILL、断开或超时不能单独证明OOM，容器内的OOM计数也不能单独归因于某个实例。
+
+只记录事件码、错误类型、HTTP状态、脱敏URL等元信息；不记录原始console/异常消息、输入值、正文、Cookie或认证头。浏览器原生stderr和编码器stderr仅提取固定故障类别，不返回原始输出。日志查询和状态探测不会挤占最近500个业务操作结果的缓存；这两个只读工具失败后可重新查询。
+
+进程重启后，先前仍活跃且没有关闭记录的实例标记manager_interrupted；这表示管理进程中断，不能据此确认浏览器或宿主机的具体故障。此前未采集的事件无法追溯。整个服务不可用时需由部署方检查docker logs和docker inspect的状态摘要。
+
 ## 错误与并发
 
 - INVALID_ARGUMENT / INVALID_TARGET / INVALID_URL
@@ -143,8 +172,9 @@ artifact_id 不接受任意文件路径。get_artifact 按 next_offset 继续读
 - DIALOG_NOT_FOUND / OPERATION_NOT_FOUND / OPERATION_FAILED
 - SHARING_DISABLED / LIVE_UNAVAILABLE / SHARE_LIMIT / SHARE_NOT_FOUND
 - RECORDING_NOT_READY / RECORDING_NOT_FOUND
+- LOG_READ_FAILED
 
-同实例一次只允许一个执行中的操作，其他实例可并行。close_instance 可强制结束正在运行的操作。get_operation 可查询当前管理进程最近500个调用；不能当作跨进程重启的永久幂等机制。服务不会自动重试点击或提交。
+同实例一次只允许一个执行中的浏览器操作，其他实例可并行；get_logs、inspect_instance和get_diagnostics独立查询。close_instance 可强制结束正在运行的操作。get_operation 可查询当前管理进程最近500个调用；不能当作跨进程重启的永久幂等机制。服务不会自动重试点击或提交。
 
 当前不支持外部 cancel 操作；可通过 close_instance 中止该实例。工具最长单步等待受配置限制，MCP 接入等待管理进程最多180秒，超时后原操作可能仍运行，需检查状态。
 

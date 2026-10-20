@@ -51,6 +51,13 @@ try {
   const result = JSON.parse(created.content[0].text);
   assert.equal(result.status, 'succeeded', JSON.stringify(result));
   instance = result.data.instance_id;
+  const inspection = await call('inspect_instance', { instance_id: instance, probe: true });
+  assert.equal(inspection.responsiveness.status, 'responsive');
+  assert.ok(
+    (await call('get_logs', { instance_id: instance })).entries.some(
+      (r: any) => r.code === 'instance_created',
+    ),
+  );
   const readFrame = async (url: string, headers?: Record<string, string>) => {
     const signal = AbortSignal.timeout(15000);
     for (let attempt = 0; attempt < 50; attempt++) {
@@ -100,6 +107,8 @@ try {
   assert.equal(Buffer.from(await publicVideo.arrayBuffer()).toString('hex'), '1a45dfa3');
   await call('revoke_share_link', { share_id: sharedRecording.share_id });
   assert.equal((await fetch(sharedRecording.media_url)).status, 404);
+  const postmortem = await call('inspect_instance', { instance_id: instance, probe: false });
+  assert.equal(postmortem.instance.close_reason, 'requested');
   instance = undefined;
   console.log(
     `HTTP MCP smoke passed: ${tools.tools.length} tools, password login, authenticated connection, live JPEG, WebM playback, public share links and revocation`,

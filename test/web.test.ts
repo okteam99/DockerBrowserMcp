@@ -237,7 +237,7 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
         requestInit: { headers: auth },
       }),
     );
-    assert.equal((await client.listTools()).tools.length, 28);
+    assert.equal((await client.listTools()).tools.length, 30);
     const call = async (name: string, args: any = {}) => {
       const r: any = await client!.callTool({ name, arguments: args });
       return JSON.parse(r.content[0].text);
@@ -465,6 +465,30 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
     const persisted = await fetch(base + '/api/recordings', { headers: auth });
     assert.equal(persisted.status, 200);
     assert.equal(((await persisted.json()) as any[]).length, recordingsBefore);
+    const resumedClient = new Client({ name: 'diagnostic-reconnect', version: '1' });
+    try {
+      await resumedClient.connect(
+        new StreamableHTTPClientTransport(new URL(base + '/mcp'), {
+          requestInit: { headers: auth },
+        }),
+      );
+      const logs: any = await resumedClient.callTool({
+        name: 'get_logs',
+        arguments: { instance_id: id, limit: 100 },
+      });
+      assert.ok(
+        JSON.parse(logs.content[0].text).data.entries.some(
+          (r: any) => r.code === 'instance_closed',
+        ),
+      );
+      const state: any = await resumedClient.callTool({
+        name: 'inspect_instance',
+        arguments: { instance_id: id, probe: false },
+      });
+      assert.equal(JSON.parse(state.content[0].text).data.instance.close_reason, 'requested');
+    } finally {
+      await resumedClient.close();
+    }
     const range = await fetch(playback, { headers: { ...auth, Range: 'bytes=999999999999-' } });
     assert.equal(range.status, 416);
     assert.equal((await fetch(persistentShare.media_url, { method: 'HEAD' })).status, 200);

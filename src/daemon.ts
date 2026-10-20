@@ -3,6 +3,8 @@ import { mkdir, chmod, unlink, open, readFile, stat, rename } from 'node:fs/prom
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { resources } from './diagnostics.js';
 import { BrowserManager } from './browser.js';
 import { definitions } from './tools.js';
 import { config } from './config.js';
@@ -38,6 +40,7 @@ export async function daemon() {
   const lock = await open(`${cfg.socket}.lock`, 'wx', 0o600);
   await lock.writeFile(String(process.pid));
   await manager.init();
+  manager.logs.log({ component: 'service', level: 'info', code: 'manager_started' });
   const operations = new Map<
     string,
     { owner: string; name: string; created_at: string; promise: Promise<any>; result?: any }
@@ -91,7 +94,7 @@ export async function daemon() {
         result = {
           operation_id: operationId,
           status: 'succeeded',
-          data: await manager.execute(owner, name, parsed),
+          data: await manager.execute(owner, name, parsed, operationId),
           error: null,
         };
       } catch (e) {
@@ -125,9 +128,12 @@ export async function daemon() {
       }
       return result;
     })();
-    operations.set(operationId, { owner, name, created_at: new Date().toISOString(), promise });
-    order.push(operationId);
-    if (order.length > 500) operations.delete(order.shift()!);
+    // Polling diagnostic tools are safe to repeat and must not evict action results or retain large log pages.
+    if (!['get_logs', 'inspect_instance'].includes(name)) {
+      operations.set(operationId, { owner, name, created_at: new Date().toISOString(), promise });
+      order.push(operationId);
+      if (order.length > 500) operations.delete(order.shift()!);
+    }
     return promise;
   };
   const server = http.createServer(async (req, res) => {
@@ -179,12 +185,23 @@ export async function daemon() {
   let web: Awaited<ReturnType<typeof startWeb>>;
   let tunnel: Awaited<ReturnType<typeof startCloudflareTunnel>> | undefined;
   let timer: NodeJS.Timeout | undefined;
+  const eventLoop = monitorEventLoopDelay({ resolution: 100 });
+  eventLoop.enable();
+  let lastResourceLog = 0,
+    lastOom: number | null = null;
   const controller = new AbortController();
   let stopping = false;
   const stop = async (code = 0) => {
     if (stopping) return;
     stopping = true;
     clearInterval(timer);
+    eventLoop.disable();
+    manager.logs.log({
+      component: 'service',
+      level: code ? 'error' : 'info',
+      code: 'manager_stopping',
+      fields: { exit_code: code },
+    });
     controller.abort();
     await tunnel?.close();
     await web?.close();
@@ -200,10 +217,18 @@ export async function daemon() {
   process.on('SIGINT', () => void stop());
   try {
     if (cfg.quickTunnel || cfg.cfTunnelToken) {
+      manager.logs.log({
+        component: 'tunnel',
+        level: 'info',
+        code: 'tunnel_starting',
+        fields: { mode: cfg.quickTunnel ? 'quick' : 'named' },
+      });
       tunnel = await startCloudflareTunnel(cfg, controller.signal);
+      manager.logs.log({ component: 'tunnel', level: 'info', code: 'tunnel_ready' });
       cfg.baseUrl = tunnel.url;
       void tunnel.exited.then(() => {
         if (!stopping) {
+          manager.logs.log({ component: 'tunnel', level: 'error', code: 'tunnel_exited' });
           process.stderr.write('Cloudflare Tunnel stopped; shutting down for a clean restart.\n');
           void stop(1);
         }
@@ -216,6 +241,25 @@ export async function daemon() {
       );
   } catch (error) {
     if (!stopping) {
+      if ((cfg.quickTunnel || cfg.cfTunnelToken) && !tunnel) {
+        const message = error instanceof Error ? error.message : '';
+        const reason = /timed out/i.test(message)
+          ? 'startup_timeout'
+          : /hostname/i.test(message)
+            ? 'hostname_configuration'
+            : /exited/i.test(message)
+              ? 'connector_exited'
+              : /Unable to start/i.test(message)
+                ? 'connector_unavailable'
+                : 'configuration_error';
+        manager.logs.log({
+          component: 'tunnel',
+          level: 'error',
+          code: 'tunnel_startup_failed',
+          fields: { reason },
+        });
+      }
+      manager.logs.log({ component: 'service', level: 'error', code: 'web_startup_failed' });
       process.stderr.write(`${error instanceof Error ? error.message : 'Web startup failed'}\n`);
       await stop(1);
     }
@@ -223,7 +267,52 @@ export async function daemon() {
   }
   timer = setInterval(() => {
     void manager.sweep().catch(() => process.stderr.write('Resource cleanup failed\n'));
+    const loopMs = eventLoop.max / 1000000;
+    eventLoop.reset();
+    if (loopMs > 1000)
+      manager.logs.log({
+        component: 'service',
+        level: 'warn',
+        code: 'manager_event_loop_delayed',
+        fields: { maximum_delay_ms: Math.round(loopMs) },
+      });
+    void resources(cfg.dataDir)
+      .then((r) => {
+        if (
+          r.container_oom_kill_count !== null &&
+          lastOom !== null &&
+          r.container_oom_kill_count > lastOom
+        )
+          manager.logs.log({
+            component: 'service',
+            level: 'warn',
+            code: 'container_oom_kills_observed',
+            fields: { previous: lastOom, current: r.container_oom_kill_count },
+          });
+        lastOom = r.container_oom_kill_count;
+        if (Date.now() - lastResourceLog >= 60000) {
+          lastResourceLog = Date.now();
+          const pressure =
+            r.container_memory_bytes !== null &&
+            r.container_memory_limit_bytes !== null &&
+            r.container_memory_bytes > r.container_memory_limit_bytes * 0.9;
+          manager.logs.log({
+            component: 'service',
+            level: pressure ? 'warn' : 'info',
+            code: pressure ? 'memory_pressure' : 'resource_sample',
+            fields: {
+              manager_rss_bytes: r.manager_rss_bytes,
+              container_memory_bytes: r.container_memory_bytes,
+              container_memory_limit_bytes: r.container_memory_limit_bytes,
+              container_oom_kill_count: r.container_oom_kill_count,
+              data_free_bytes: r.data_free_bytes,
+            },
+          });
+        }
+      })
+      .catch(() => {});
   }, 15000);
   timer.unref();
+  manager.logs.log({ component: 'service', level: 'info', code: 'manager_ready' });
   process.stderr.write('Browser MCP manager ready\n');
 }

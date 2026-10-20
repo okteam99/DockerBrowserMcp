@@ -1,6 +1,7 @@
 import {
   chromium,
   type Browser,
+  type BrowserServer,
   type BrowserContext,
   type Page,
   type Locator,
@@ -24,6 +25,7 @@ import { NetworkPolicy, createGateway } from './network.js';
 import { Artifacts } from './artifacts.js';
 import { RecordingStore } from './recordings.js';
 import { ShareStore } from './shares.js';
+import { Diagnostics, resources } from './diagnostics.js';
 import { ToolError, publicError, safeUrl } from './errors.js';
 
 type PageEntry = {
@@ -31,11 +33,21 @@ type PageEntry = {
   generation: number;
   refs: Map<string, ElementHandle>;
   dialog?: Dialog;
+  crashed?: boolean;
 };
 type Instance = {
   id: string;
   owner: string;
   browser: Browser;
+  server: BrowserServer;
+  operation?: {
+    operation_id: string;
+    tool: string;
+    started_at: string;
+    warn_after_ms: number;
+    warned?: boolean;
+  };
+  probes: Map<string, Promise<{ status: string }>>;
   context: BrowserContext;
   gateway: Server;
   options: InstanceOptions;
@@ -66,15 +78,19 @@ export class BrowserManager {
   policy: NetworkPolicy;
   recordings: RecordingStore;
   shares: ShareStore;
+  logs: Diagnostics;
   private creating = 0;
+  private closing = 0;
   constructor(public cfg: Config) {
     this.artifacts = new Artifacts(cfg);
     this.policy = new NetworkPolicy(cfg);
-    this.recordings = new RecordingStore(cfg);
+    this.logs = new Diagnostics(cfg);
+    this.recordings = new RecordingStore(cfg, (event) => this.logs.log(event));
     this.shares = new ShareStore(cfg.dataDir);
   }
   async init() {
     await mkdir(this.cfg.dataDir, { recursive: true, mode: 0o700 });
+    await this.logs.init();
     await this.artifacts.init();
     await this.recordings.init();
     await this.shares.init();
@@ -102,6 +118,28 @@ export class BrowserManager {
   private event(i: Instance, data: any) {
     i.events.push({ time: new Date().toISOString(), ...data });
     if (i.events.length > 300) i.events.shift();
+    const fields = Object.fromEntries(
+      Object.entries(data).filter(
+        ([key, value]) =>
+          !['type', 'page_id'].includes(key) &&
+          ['string', 'number', 'boolean'].includes(typeof value),
+      ),
+    );
+    if (typeof fields.url === 'string') fields.url = this.logs.url(fields.url);
+    this.logs.log({
+      owner: i.owner,
+      instance_id: i.id,
+      page_id: data.page_id,
+      operation_id: i.operation?.operation_id,
+      component: 'page',
+      level: ['page_crashed', 'page_error'].includes(data.type)
+        ? 'error'
+        : ['request_failed', 'console'].includes(data.type)
+          ? 'warn'
+          : 'info',
+      code: data.type,
+      fields: fields as any,
+    });
   }
   private clearRefs(p: PageEntry) {
     for (const h of p.refs.values()) void h.dispose().catch(() => {});
@@ -120,6 +158,8 @@ export class BrowserManager {
     page.on('close', () => {
       this.clearRefs(entry);
       i.pages.delete(id);
+      i.probes.delete(id);
+      this.event(i, { type: 'page_closed', page_id: id, instance_closing: i.closing });
     });
     page.on('framenavigated', (frame) => {
       if (frame === page.mainFrame()) {
@@ -132,7 +172,7 @@ export class BrowserManager {
         type: 'request_failed',
         page_id: id,
         url: safeUrl(r.url()),
-        error: r.failure()?.errorText,
+        error: r.failure()?.errorText.match(/(?:net::)?ERR_[A-Z0-9_]+/)?.[0] ?? 'REQUEST_FAILED',
       }),
     );
     page.on('response', (r) => {
@@ -144,14 +184,33 @@ export class BrowserManager {
       if (msg.type() === 'error' || msg.type() === 'warning')
         this.event(i, { type: 'console', level: msg.type(), page_id: id });
     });
-    page.on('pageerror', () => this.event(i, { type: 'page_error', page_id: id }));
+    page.on('pageerror', (error) =>
+      this.event(i, {
+        type: 'page_error',
+        page_id: id,
+        error_name: [
+          'Error',
+          'TypeError',
+          'ReferenceError',
+          'SyntaxError',
+          'RangeError',
+          'URIError',
+          'EvalError',
+        ].includes(error.name)
+          ? error.name
+          : 'Error',
+      }),
+    );
     page.on('dialog', (dialog) => {
       entry.dialog = dialog;
     });
     page.on('download', (download) => {
       void this.download(i, id, download);
     });
-    page.on('crash', () => this.event(i, { type: 'page_crashed', page_id: id }));
+    page.on('crash', () => {
+      entry.crashed = true;
+      this.event(i, { type: 'page_crashed', page_id: id });
+    });
     return id;
   }
   private async download(i: Instance, pageId: string, download: Download) {
@@ -255,17 +314,43 @@ export class BrowserManager {
       ],
     };
   }
-  async create(owner: string, raw: unknown) {
-    if (this.instances.size + this.creating >= this.cfg.maxInstances)
+  async create(owner: string, raw: unknown, operationId?: string) {
+    if (this.instances.size + this.creating + this.closing >= this.cfg.maxInstances)
       throw new ToolError('INSTANCE_LIMIT', 'Maximum instances reached.');
     this.creating++;
-    let gateway: Server | undefined, browser: Browser | undefined, dir: string | undefined;
+    let gateway: Server | undefined,
+      browser: Browser | undefined,
+      server: BrowserServer | undefined,
+      dir: string | undefined;
+    const id = `ins_${randomUUID()}`;
+    let current: Instance | undefined,
+      failed = false;
+    this.logs.register({
+      instance_id: id,
+      owner,
+      created_at: new Date().toISOString(),
+      status: 'starting',
+    });
+    this.logs.log({
+      owner,
+      instance_id: id,
+      operation_id: operationId,
+      component: 'browser',
+      level: 'info',
+      code: 'browser_launch_started',
+    });
     try {
       const options = createSchema.parse(raw);
       const proxy = await this.resolveProxy(options);
       gateway = await createGateway(this.policy, proxy);
       dir = await mkdtemp(join(this.cfg.dataDir, 'sessions', 'instance-'));
-      browser = await chromium.launch({
+      this.logs.registerSecret(proxy?.username, false);
+      this.logs.registerSecret(proxy?.password, false);
+      server = await chromium.launchServer({
+        host: '127.0.0.1',
+        handleSIGINT: false,
+        handleSIGTERM: false,
+        handleSIGHUP: false,
         headless: true,
         chromiumSandbox: process.env.CHROMIUM_SANDBOX === 'true',
         timeout: 30000,
@@ -278,6 +363,51 @@ export class BrowserManager {
           '--disable-features=DnsOverHttps',
         ],
       });
+      const child = server.process();
+      this.logs.update(id, { pid: child.pid });
+      child.once('exit', (code, signal) => {
+        const expected = !!current?.closing || failed;
+        this.logs.log({
+          owner,
+          instance_id: id,
+          component: 'browser',
+          level: expected ? 'info' : 'error',
+          code: 'browser_process_exited',
+          fields: { exit_code: code, signal, expected },
+        });
+        this.logs.update(id, {
+          exit_code: code,
+          exit_signal: signal,
+          ...(!expected ? { status: 'crashed' as const } : {}),
+        });
+        if (current && !expected) current.crashed = true;
+      });
+      const reported = new Set<string>();
+      let stderrTail = '';
+      child.stderr?.on('data', (chunk: Buffer) => {
+        const text = (stderrTail = (stderrTail + chunk.toString()).slice(-8192));
+        const code = /out of memory|allocation failed|oom-kill/i.test(text)
+          ? 'browser_allocation_failure'
+          : /no space left on device/i.test(text)
+            ? 'browser_disk_full'
+            : /FATAL|Received signal/i.test(text)
+              ? 'browser_native_fatal'
+              : /sandbox.*(?:failed|error)|No usable sandbox/i.test(text)
+                ? 'browser_sandbox_error'
+                : undefined;
+        if (code && !reported.has(code)) {
+          reported.add(code);
+          this.logs.log({
+            owner,
+            instance_id: id,
+            component: 'browser',
+            level: 'error',
+            code,
+            fields: { shutdown_requested: !!current?.closing || failed },
+          });
+        }
+      });
+      browser = await chromium.connect(server.wsEndpoint(), { timeout: 30000 });
       const context = await browser.newContext({
         userAgent: options.user_agent,
         viewport: options.viewport,
@@ -301,14 +431,16 @@ export class BrowserManager {
         }
       });
       const i: Instance = {
-        id: `ins_${randomUUID()}`,
+        id,
         owner,
         browser,
+        server,
         context,
         gateway,
         options,
         proxy,
         pages: new Map(),
+        probes: new Map(),
         created: Date.now(),
         touched: Date.now(),
         events: [],
@@ -318,13 +450,40 @@ export class BrowserManager {
         closing: false,
         crashed: false,
       };
+      current = i;
       context.on('page', (page) => this.attach(i, page));
       browser.on('disconnected', () => {
-        i.crashed = true;
+        this.logs.log({
+          owner,
+          instance_id: id,
+          component: 'browser',
+          level: i.closing ? 'info' : 'error',
+          code: 'browser_disconnected',
+          fields: { expected: i.closing },
+        });
+        if (!i.closing) {
+          i.crashed = true;
+          this.logs.update(id, { status: 'crashed' });
+        }
       });
       this.instances.set(i.id, i);
+      this.logs.update(id, { status: 'active' });
+      this.logs.log({
+        owner,
+        instance_id: id,
+        operation_id: operationId,
+        component: 'browser',
+        level: 'info',
+        code: 'instance_created',
+        fields: {
+          pid: child.pid ?? null,
+          idle_timeout_seconds: options.idle_timeout_seconds,
+          max_lifetime_seconds: options.max_lifetime_seconds,
+          proxy_enabled: !!proxy,
+        },
+      });
       const p = await context.newPage();
-      await this.recordings.start(i.id, owner, () => {
+      const recorder = await this.recordings.start(i.id, owner, () => {
         const e = i.pages.get(i.activePageId ?? '') ?? Array.from(i.pages.values()).at(-1);
         if (!e) return undefined;
         return {
@@ -334,8 +493,50 @@ export class BrowserManager {
           busy: i.busy,
         };
       });
+      this.logs.update(id, {
+        recording: {
+          recording_id: recorder.meta.id,
+          status: recorder.meta.status,
+          frames: recorder.meta.frames,
+          bytes: recorder.meta.bytes,
+          last_frame_at: null,
+          sampling_failures: 0,
+        },
+      });
       return { ...this.summary(i), actual: await this.environment(p) };
     } catch (e) {
+      failed = true;
+      const message = e instanceof Error ? e.message : '';
+      const creationReason = /executable.*(?:doesn.t exist|not found)|playwright install/i.test(
+        message,
+      )
+        ? 'browser_binary_missing'
+        : /sandbox/i.test(message)
+          ? 'sandbox_configuration'
+          : /no space|ENOSPC/i.test(message)
+            ? 'disk_full'
+            : /out of memory|ENOMEM|allocation failed/i.test(message)
+              ? 'memory_allocation_failure'
+              : /EACCES|permission denied/i.test(message)
+                ? 'permission_denied'
+                : /timeout|timed out/i.test(message)
+                  ? 'creation_timeout'
+                  : 'initialization_failed';
+      if (current) current.closing = true;
+      this.logs.update(id, {
+        status: 'failed',
+        close_reason: 'creation_failed',
+        ended_at: new Date().toISOString(),
+      });
+      this.logs.log({
+        owner,
+        instance_id: id,
+        operation_id: operationId,
+        component: 'browser',
+        level: 'error',
+        code: 'instance_creation_failed',
+        fields: { error_code: publicError(e).code, reason: creationReason },
+      });
       if (browser) {
         for (const [id, i] of this.instances) if (i.browser === browser) this.instances.delete(id);
       }
@@ -343,6 +544,7 @@ export class BrowserManager {
         for (const [id, r] of this.recordings.active)
           if (!this.instances.has(id)) await this.recordings.stop(id).catch(() => {});
       }
+      await server?.kill().catch(() => {});
       await browser?.close().catch(() => {});
       await gateway?.close(true).catch(() => {});
       if (dir) await rm(dir, { recursive: true, force: true });
@@ -394,37 +596,279 @@ export class BrowserManager {
     if (target.css) return root.locator(target.css);
     throw new ToolError('INVALID_TARGET', 'Specify ref, role, text, or css.');
   }
-  async close(owner: string, id: string) {
+  async close(owner: string, id: string, reason = 'requested') {
     const i = this.instances.get(id);
     if (!i || i.owner !== owner) throw new ToolError('INSTANCE_NOT_FOUND', 'Unknown instance.');
+    const recorder = this.recordings.active.get(id);
     i.closing = true;
     this.instances.delete(id);
-    await this.recordings.stop(i.id).catch(() => {});
-    await i.context.close().catch(() => {});
+    this.closing++;
+    this.logs.update(id, { status: 'closing', close_reason: reason });
+    this.logs.log({
+      owner,
+      instance_id: id,
+      component: 'browser',
+      level: 'info',
+      code: 'instance_close_started',
+      fields: { reason },
+    });
+    let forced = false;
+    const kill = setTimeout(() => {
+      forced = true;
+      void i.server.kill().catch(() => {});
+    }, 3000);
+    kill.unref();
+    await this.recordings.stop(i.id).catch(() =>
+      this.logs.log({
+        owner,
+        instance_id: id,
+        component: 'recorder',
+        level: 'error',
+        code: 'recorder_cleanup_failed',
+      }),
+    );
+    await i.server.close().catch(async () => {
+      this.logs.log({
+        owner,
+        instance_id: id,
+        component: 'browser',
+        level: 'warn',
+        code: 'browser_close_failed',
+      });
+      await i.server.kill().catch(() => {});
+    });
+    clearTimeout(kill);
     await i.browser.close().catch(() => {});
     await i.gateway.close(true).catch(() => {});
-    await rm(i.dir, { recursive: true, force: true });
+    await rm(i.dir, { recursive: true, force: true }).catch(() =>
+      this.logs.log({
+        owner,
+        instance_id: id,
+        component: 'browser',
+        level: 'warn',
+        code: 'session_cleanup_failed',
+      }),
+    );
+    this.closing--;
+    if (recorder)
+      this.logs.update(id, {
+        recording: {
+          recording_id: recorder.meta.id,
+          status: recorder.meta.status,
+          frames: recorder.meta.frames,
+          bytes: recorder.meta.bytes,
+          last_frame_at: recorder.latest ? new Date(recorder.latest.time).toISOString() : null,
+          sampling_failures: recorder.diagnostics().total_sampling_failures,
+        },
+      });
+    this.logs.update(id, {
+      status: 'closed',
+      close_reason: reason,
+      ended_at: new Date().toISOString(),
+    });
+    this.logs.log({
+      owner,
+      instance_id: id,
+      component: 'browser',
+      level: forced ? 'warn' : 'info',
+      code: 'instance_closed',
+      fields: { reason, forced },
+    });
+    await this.logs.flush();
     return { instance_id: id, status: 'closed' };
   }
   async sweep() {
-    for (const i of this.instances.values())
+    for (const i of this.instances.values()) {
       if (
-        !i.busy &&
-        (i.crashed ||
-          Date.now() - i.touched > i.options.idle_timeout_seconds * 1000 ||
-          Date.now() - i.created > i.options.max_lifetime_seconds * 1000)
-      )
-        await this.close(i.owner, i.id);
+        i.operation &&
+        !i.operation.warned &&
+        Date.now() - Date.parse(i.operation.started_at) > i.operation.warn_after_ms
+      ) {
+        i.operation.warned = true;
+        this.logs.log({
+          owner: i.owner,
+          instance_id: i.id,
+          operation_id: i.operation.operation_id,
+          component: 'operation',
+          level: 'warn',
+          code: 'operation_stalled',
+          fields: {
+            tool: i.operation.tool,
+            elapsed_ms: Date.now() - Date.parse(i.operation.started_at),
+          },
+        });
+      }
+      const reason = i.crashed
+        ? 'browser_disconnected'
+        : Date.now() - i.created > i.options.max_lifetime_seconds * 1000
+          ? 'max_lifetime'
+          : !i.busy && Date.now() - i.touched > i.options.idle_timeout_seconds * 1000
+            ? 'idle_timeout'
+            : undefined;
+      if (reason) await this.close(i.owner, i.id, reason);
+    }
     await this.artifacts.clean();
     await this.recordings.clean();
+    await this.logs.clean();
   }
   adminInstances() {
     return Array.from(this.instances.values(), (i) => ({ ...this.summary(i), owner: i.owner }));
   }
   async shutdown() {
-    await Promise.allSettled(Array.from(this.instances.values(), (i) => this.close(i.owner, i.id)));
+    await Promise.allSettled(
+      Array.from(this.instances.values(), (i) => this.close(i.owner, i.id, 'service_shutdown')),
+    );
+    await this.logs.flush();
   }
-  async execute(owner: string, name: string, a: any): Promise<any> {
+  async inspect(owner: string, id: string, probe: boolean, timeout: number) {
+    const record = this.logs.get(owner, id);
+    const i = this.instances.get(id);
+    const active = i && i.owner === owner ? i : undefined;
+    const recorder = this.recordings.active.get(id);
+    const elapsed = active?.operation ? Date.now() - Date.parse(active.operation.started_at) : null;
+    const page =
+      active?.pages.get(active.activePageId ?? '') ?? [...(active?.pages.values() ?? [])].at(-1);
+    let responsiveness: { status: string } = { status: probe ? 'unavailable' : 'not_probed' };
+    if (
+      probe &&
+      active &&
+      page &&
+      !page.page.isClosed() &&
+      !page.crashed &&
+      active.browser.isConnected()
+    ) {
+      const pageId = [...active.pages].find(([, entry]) => entry === page)![0];
+      if (!active.probes.has(pageId)) {
+        const promise = page.page
+          .evaluate(() => true)
+          .then(
+            () => ({ status: 'responsive' }),
+            () => ({ status: 'probe_failed' }),
+          );
+        active.probes.set(pageId, promise);
+        void promise.finally(() => {
+          if (active.probes.get(pageId) === promise) active.probes.delete(pageId);
+        });
+      }
+      let timer: NodeJS.Timeout | undefined;
+      responsiveness = await Promise.race([
+        active.probes.get(pageId)!,
+        new Promise<{ status: string }>((resolve) => {
+          timer = setTimeout(() => resolve({ status: 'unresponsive' }), timeout);
+        }),
+      ]);
+      clearTimeout(timer);
+    }
+    const findings: string[] = [];
+    if (active?.crashed) findings.push('browser_disconnected');
+    if (page?.crashed) findings.push('page_crashed');
+    if (elapsed !== null && active?.operation && elapsed > active.operation.warn_after_ms)
+      findings.push('operation_stalled');
+    const frameAge = recorder?.latest ? Date.now() - recorder.latest.time : null;
+    if (
+      active &&
+      page &&
+      (frameAge === null ? Date.now() - active.created > 10000 : frameAge > 10000)
+    )
+      findings.push('live_frames_stale');
+    if (responsiveness.status === 'unresponsive') findings.push('renderer_probe_timed_out');
+    if (recorder?.meta.status === 'failed') findings.push('recording_failed');
+    return {
+      instance: this.logs.get(owner, id),
+      live: active
+        ? {
+            connected: active.browser.isConnected(),
+            busy: active.busy,
+            active_operation: active.operation ?? null,
+            operation_elapsed_ms: elapsed,
+            page_count: active.pages.size,
+            active_page_id: active.activePageId,
+            last_frame_age_ms: frameAge,
+            recording: recorder?.diagnostics() ?? null,
+          }
+        : null,
+      responsiveness,
+      findings,
+      resources: await resources(this.cfg.dataDir),
+      recent_logs: await this.logs.query(owner, { instance_id: id, level: 'warn', limit: 20 }),
+      note: 'A probe timeout is an observation, not proof of a specific cause. This call does not cancel, retry or close browser actions.',
+    };
+  }
+  async execute(
+    owner: string,
+    name: string,
+    a: any,
+    operationId: string = randomUUID(),
+  ): Promise<any> {
+    if (name === 'get_logs') return this.logs.query(owner, a);
+    if (name === 'inspect_instance')
+      return this.inspect(owner, a.instance_id, a.probe ?? true, a.timeout_ms ?? 1500);
+    if (name === 'get_diagnostics') {
+      const i = this.instances.get(a.instance_id);
+      if (!i || i.owner !== owner)
+        throw new ToolError(
+          'INSTANCE_NOT_FOUND',
+          'Unknown live instance. Use get_logs or inspect_instance for retained history.',
+        );
+      return { events: i.events.slice(-a.limit), downloads: i.downloads };
+    }
+    const started = Date.now();
+    const own = this.instances.get(a.instance_id);
+    const id = own?.owner === owner ? own.id : undefined;
+    const track = ![
+      'health',
+      'list_instances',
+      'list_pages',
+      'get_instance',
+      'list_recordings',
+      'list_share_links',
+    ].includes(name);
+    if (track)
+      this.logs.log({
+        owner,
+        instance_id: id,
+        operation_id: operationId,
+        component: 'operation',
+        level: 'info',
+        code: 'operation_started',
+        fields: { tool: name },
+      });
+    try {
+      const result = await this.dispatchOperation(owner, name, a, operationId);
+      if (track)
+        this.logs.log({
+          owner,
+          instance_id: id ?? (name === 'create_instance' ? result.instance_id : undefined),
+          operation_id: operationId,
+          component: 'operation',
+          level: 'info',
+          code: 'operation_succeeded',
+          fields: { tool: name, elapsed_ms: Date.now() - started },
+        });
+      return result;
+    } catch (error) {
+      this.logs.log({
+        owner,
+        instance_id: id,
+        operation_id: operationId,
+        component: 'operation',
+        level: 'error',
+        code: 'operation_failed',
+        fields: {
+          tool: name,
+          error_code: publicError(error).code,
+          elapsed_ms: Date.now() - started,
+        },
+      });
+      throw error;
+    }
+  }
+  private async dispatchOperation(
+    owner: string,
+    name: string,
+    a: any,
+    operationId: string,
+  ): Promise<any> {
     if (name === 'list_share_links') return this.shares.list(owner);
     if (name === 'revoke_share_link') return this.shares.revoke(owner, a.share_id);
     if (name === 'create_share_link') {
@@ -481,7 +925,7 @@ export class BrowserManager {
     if (name === 'health')
       return {
         status: 'ok',
-        version: '0.5.1',
+        version: '0.6.0',
         base_url: this.cfg.baseUrl,
         public_url_mode: this.cfg.quickTunnel
           ? 'quick_tunnel'
@@ -489,7 +933,13 @@ export class BrowserManager {
             ? 'named_tunnel'
             : 'custom',
         instances: this.instances.size,
+        starting_instances: this.creating,
+        closing_instances: this.closing,
         max_instances: this.cfg.maxInstances,
+        resources: await resources(this.cfg.dataDir),
+        diagnostic_write_errors: this.logs.writeErrors,
+        diagnostic_last_write_error: this.logs.lastWriteError ?? null,
+        diagnostic_dropped_events: this.logs.droppedEvents,
       };
     if (name === 'list_proxies')
       return Object.entries(await loadProxies(this.cfg.proxyFile)).map(([ref, p]) => ({
@@ -501,7 +951,7 @@ export class BrowserManager {
         country: p.country,
         authenticated: Boolean(p.username || p.password),
       }));
-    if (name === 'create_instance') return this.create(owner, a);
+    if (name === 'create_instance') return this.create(owner, a, operationId);
     if (name === 'list_instances')
       return Array.from(this.instances.values())
         .filter((i) => i.owner === owner)
@@ -524,9 +974,29 @@ export class BrowserManager {
     if (i.busy)
       throw new ToolError('INSTANCE_BUSY', 'An operation is already running on this instance.');
     i.busy = true;
+    i.operation = {
+      operation_id: operationId,
+      tool: name,
+      started_at: new Date().toISOString(),
+      warn_after_ms: Math.max(this.cfg.timeout, a.timeout_ms ?? 0) + 5000,
+    };
+    this.logs.update(i.id, { last_operation: { ...i.operation, status: 'running' } });
+    let status = 'failed';
     try {
-      return await this.action(i, name, a);
+      const result = await this.action(i, name, a);
+      status = 'succeeded';
+      return result;
     } finally {
+      this.logs.update(i.id, {
+        last_operation: {
+          operation_id: operationId,
+          tool: name,
+          started_at: i.operation!.started_at,
+          ended_at: new Date().toISOString(),
+          status,
+        },
+      });
+      i.operation = undefined;
       i.busy = false;
       i.touched = Date.now();
     }
@@ -551,8 +1021,6 @@ export class BrowserManager {
       if (a.url) await p.goto(a.url, { waitUntil: 'domcontentloaded' });
       return { page_id, url: p.url() };
     }
-    if (name === 'get_diagnostics')
-      return { events: i.events.slice(-a.limit), downloads: i.downloads };
     if (name === 'list_downloads') return i.downloads;
     if (name === 'verify_environment') {
       const u = a.check_url ?? 'https://api.ipify.org?format=json';

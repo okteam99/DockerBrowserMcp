@@ -64,6 +64,8 @@ export function config() {
       : process.env.CF_QUICK_TUNNEL === 'true';
   return {
     dataDir: resolve(process.env.DATA_DIR ?? './data'),
+    maxLogBytes: integer('MAX_LOG_BYTES', 16777216, 65536, 268435456),
+    logRetentionHours: integer('LOG_RETENTION_HOURS', 168, 1, 8760),
     socket: process.env.MCP_SOCKET ?? '/tmp/docker-browser-mcp.sock',
     proxyFile: process.env.PROXY_CONFIG ?? '/config/proxies.json',
     maxInstances: integer('MAX_INSTANCES', 10, 1, 100),

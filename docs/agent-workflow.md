@@ -30,3 +30,12 @@
 用户需要公开观看时，在实例运行期间调用 `create_share_link`，传 `kind=live`、`instance_id` 及所需 `expires_in_seconds`，将返回的 `url` 交给用户。实例关闭后，通过 `list_recordings` 查找对应录像，再以 `kind=recording`、`recording_id` 创建独立回放链接。不要将管理员 Token 或原始鉴权媒体地址当作公开分享链接。
 
 链接无需登录，持有者可看到对应内容。告知有效期并保存 `share_id`，需要收回时调用 `revoke_share_link`；可用 `list_share_links` 查询状态。完整 URL 只在创建结果中返回，后续列表不返回密钥。
+
+## 实例退出或疑似卡死
+
+1. 调用 `inspect_instance`（instance_id，probe=true）读取关闭原因、进程信号、正在执行的操作与耗时、采样/编码器状态及资源信息；探测有独立时限，不与业务步骤争抢执行锁。
+2. 用 `get_logs` 按实例查最近 warn/error；从 active_operation 取 operation_id，再按 operation_id 查询事件或用 get_operation 判断业务步骤结果。不传实例可看当前principal的近期事件和通用服务告警；需要更多信息时按component和since缩小范围。
+3. idle_timeout/max_lifetime是配置触发的回收，不直接归为网站故障。页面崩溃、浏览器断开、编码器失败和画面过期需要分开报告；一个探测超时也不足以确认根因。
+4. 若SIGKILL或资源异常，核对同一时间的资源事件和宿主/容器证据，不能仅凭信号或当前OOM计数认定某个实例因OOM被杀。服务重启、cgroup重建或缺少字段时明确证据不足。
+5. 若原操作结果不明，保留未知状态，不盲目重试提交。需要恢复时，先确认任务可中止，关闭旧实例再创建新实例；诊断工具本身不会自动取消或重试业务操作。
+6. 记录instance_id、operation_id、日志seq与时间，说明已证实事实、候选原因和缺失证据。服务完全不可达时让部署方保留docker日志和状态摘要；升级前未记录的事件无法补回。

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm, access } from 'node:fs/promises';
+import { mkdtemp, rm, access, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -35,6 +35,7 @@ test('MCP stdio discovery, operation lookup, artifact transfer, reconnect and pr
     return c;
   };
   let a: Client | undefined, b: Client | undefined;
+  let shutdownId: string | undefined;
   try {
     let ready = false;
     for (let n = 0; n < 100; n++) {
@@ -49,7 +50,7 @@ test('MCP stdio discovery, operation lookup, artifact transfer, reconnect and pr
     assert.ok(ready, logs);
     a = await connect('alice');
     const tools = await a.listTools();
-    assert.equal(tools.tools.length, 28);
+    assert.equal(tools.tools.length, 30);
     const call = async (c: Client, name: string, args: any = {}) => {
       const r: any = await c.callTool({ name, arguments: args });
       return JSON.parse(r.content[0].text);
@@ -57,6 +58,13 @@ test('MCP stdio discovery, operation lookup, artifact transfer, reconnect and pr
     const created = await call(a, 'create_instance', { viewport: { width: 390, height: 844 } });
     assert.equal(created.status, 'succeeded');
     const i = created.data.instance_id;
+    const inspected = await call(a, 'inspect_instance', { instance_id: i, probe: true });
+    assert.equal(inspected.data.responsiveness.status, 'responsive');
+    assert.ok(
+      (await call(a, 'get_logs', { instance_id: i })).data.entries.some(
+        (r: any) => r.code === 'instance_created',
+      ),
+    );
     const op = await call(a, 'get_operation', { operation_id: created.operation_id });
     assert.equal(op.data.data.instance_id, i);
     const recent = await call(a, 'list_operations', {});
@@ -82,12 +90,36 @@ test('MCP stdio discovery, operation lookup, artifact transfer, reconnect and pr
       'OPERATION_NOT_FOUND',
     );
     assert.equal((await call(a, 'close_instance', { instance_id: i })).status, 'succeeded');
+    assert.equal(
+      (await call(a, 'inspect_instance', { instance_id: i, probe: false })).data.instance
+        .close_reason,
+      'requested',
+    );
+    assert.equal((await call(b, 'get_logs', { instance_id: i })).error.code, 'INSTANCE_NOT_FOUND');
+    shutdownId = (await call(a, 'create_instance')).data.instance_id;
   } finally {
     await a?.close();
     await b?.close();
-    const ended = new Promise<void>((r) => daemon.once('exit', () => r()));
-    daemon.kill('SIGTERM');
-    await ended;
+    if (daemon.exitCode === null) {
+      const ended = new Promise<void>((r) => daemon.once('exit', () => r()));
+      daemon.kill('SIGTERM');
+      await ended;
+    }
+    if (shutdownId) {
+      const state = JSON.parse(
+        await readFile(join(dir, 'diagnostics/instances', shutdownId + '.json'), 'utf8'),
+      );
+      assert.equal(state.close_reason, 'service_shutdown');
+      const events = (await readFile(join(dir, 'diagnostics/events.jsonl'), 'utf8'))
+        .trim()
+        .split('\n')
+        .map((s) => JSON.parse(s));
+      const processExit = events.find(
+        (e: any) => e.instance_id === shutdownId && e.code === 'browser_process_exited',
+      );
+      assert.ok(processExit);
+      assert.equal(processExit.fields.expected, true);
+    }
     await rm(dir, { recursive: true, force: true });
   }
 });

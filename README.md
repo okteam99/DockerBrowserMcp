@@ -17,7 +17,7 @@ docker run -d --init \
   --shm-size=1g \
   -e WEB_PASSWORD='替换为你的强密码' \
   -v browser-mcp-data:/data \
-  bdpgogoup/dockerbrowsermcp:20261020221705
+  bdpgogoup/dockerbrowsermcp:20261020225338
 ```
 
 查看自动生成的 HTTPS 地址：
@@ -44,7 +44,7 @@ docker run -d --init \
   -e WEB_PASSWORD='替换为你的强密码' \
   -e CF_TUNNEL_TOKEN='替换为隧道的连接器Token' \
   -v browser-mcp-data:/data \
-  bdpgogoup/dockerbrowsermcp:20261020221705
+  bdpgogoup/dockerbrowsermcp:20261020225338
 ```
 
 服务自动读取隧道配置，识别唯一指向本容器端口的域名，无需再填 `BASE_URL`。如果配置了多个符合条件的域名、通配符或路径规则，请增加 `-e BASE_URL=https://browser.example.com` 明确选择地址。只支持 Cloudflare 远程管理的命名隧道，不会代替用户购买域名或创建 DNS。
@@ -64,7 +64,7 @@ docker run -d --init \
   -e BASE_URL=http://localhost:8080 \
   -e WEB_PASSWORD='替换为你的强密码' \
   -v browser-mcp-data:/data \
-  bdpgogoup/dockerbrowsermcp:20261020221705
+  bdpgogoup/dockerbrowsermcp:20261020225338
 ```
 
 部署到远程服务器时，将 `BASE_URL` 改为实际可访问地址；部署方负责 DNS、反向代理、HTTPS 或端口映射接通容器8080。`BASE_URL` 可带路径前缀。
@@ -220,6 +220,8 @@ Agent 可通过 MCP 创建无需登录的只读观看链接；链接使用 `BASE
 | `MAX_RECORDINGS_BYTES` | 1073741824 | 历史录像总配额 |
 | `MAX_DOWNLOAD_BYTES` | 52428800 | 下载及单产物大小限制 |
 | `MAX_DATA_BYTES` | 1073741824 | 截图/下载等产物配额，不含录像 |
+| `MAX_LOG_BYTES` | 16777216 | 诊断事件轮转总大小，不含最多1000份实例快照 |
+| `LOG_RETENTION_HOURS` | 168 | 诊断事件和结束实例状态的最长保留时间 |
 | `ARTIFACT_RETENTION_HOURS` | 168 | 产物及历史录像保留时间 |
 | `PROXY_CONFIG` | /config/proxies.json | 预配置代理文件 |
 | `DATA_DIR` | /data（Docker） | 数据存储位置 |
@@ -252,6 +254,48 @@ Agent 用 `list_proxies` 获取名称，再传 `proxy_ref` 创建实例。`proxy
 
 工具执行成功不等于业务流程通过；实际测试标准由 Skill 决定。
 
+## MCP 日志与故障排查
+
+`get_logs` 查询脱敏的持久化事件，`inspect_instance` 查询当前或历史实例状态。实例关闭、浏览器崩溃、管理进程重启后，只要保留 `/data` 且记录未被清理，仍可排查；新日志能力无法补回升级前未记录的证据。
+
+卡住时先调用 `inspect_instance`：
+
+```json
+{"instance_id":"ins_...","probe":true,"timeout_ms":1500}
+```
+
+它绕过实例执行锁，返回正在执行的操作及耗时、浏览器连接、进程退出码/信号、关闭原因、最后画面时间、采样和编码器状态、资源信息及最近告警。探测只执行固定的只读响应性检查，最长5秒，不会自动取消、重试或关闭任务。
+
+按实例查看异常事件，`level=warn` 包含 warn 和 error：
+
+```json
+{"instance_id":"ins_...","level":"warn","limit":100}
+```
+
+以上是 `get_logs` 的 arguments。也可不传实例查询最近事件，或用 `operation_id`、`component`、`since`、`after_seq` 筛选。`since` 使用带时区的 ISO8601 时间；返回 `next_after_seq`，下次传为 `after_seq` 可增量读取，`has_more=true` 时继续翻页。
+
+能够区分的证据包括：
+
+- 正常关闭、空闲超时 `idle_timeout`、最大存活期 `max_lifetime`、服务关闭 `service_shutdown`。
+- 浏览器断开、主进程退出码/信号、页面崩溃、操作超时和长时间未完成。
+- 截图采样失败/恢复、编码器不可用/退出、编码拥塞和录像配额。
+- 管理进程事件循环延迟、容器内存压力、cgroup OOM 计数变化、数据卷剩余空间。
+
+**SIGKILL、断开连接或探测超时本身不能证明 OOM。** 资源信息缺失时返回 null；历史实例中的故障与当前容器的资源计数也可能不属于同一次运行。需要结合事件时间、宿主机和容器证据判断。
+
+日志默认保留7天、最多约16 MiB，分4段轮转；实例状态最多保留1000个结束记录。高频页面事件超过队列上限会丢弃并通过 `dropped_events` 明确报告，避免日志本身拖垮服务；`write_errors` / `last_write_error` 报告存储故障。历史被轮转或过期清理后无法补回。
+
+日志不记录认证头、Cookie、请求/响应正文、输入内容和原始 console 文本；保留错误类型、HTTP状态、网络错误码及脱敏URL。MCP仅能查询当前 principal 的实例事件和通用服务事件，不接受任意服务器文件路径。公开分享链接和公开文档不能访问日志。
+
+服务或容器整个不可用时，MCP也无法响应。请先在服务器上保留以下输出，再恢复服务：
+
+```sh
+docker logs --since 30m --tail 200 docker-browser-mcp
+docker inspect --format 'oom={{.State.OOMKilled}} exit={{.State.ExitCode}} restarts={{.RestartCount}} error={{.State.Error}}' docker-browser-mcp
+```
+
+不要用完整 `docker inspect` 输出替代上述摘要，完整输出可能包含部署环境中的密码和Token。
+
 ## 发布镜像
 
 发布目标固定为 **Docker Hub `bdpgogoup/dockerbrowsermcp`**。标签为 `YYYYMMDDHHMMSS`，默认上海时区。脚本默认构建并推送 amd64 / arm64 两个平台，不发布 latest 别名。
@@ -269,10 +313,10 @@ bash scripts/publish-docker.sh
 ## 源码构建及 stdio 接入
 
 ```sh
-docker build -t docker-browser-mcp:0.5.1 .
+docker build -t docker-browser-mcp:0.6.0 .
 ```
 
-将一行部署命令最后的镜像名换成 `docker-browser-mcp:0.5.1` 即可本地使用。
+将一行部署命令最后的镜像名换成 `docker-browser-mcp:0.6.0` 即可本地使用。
 
 兼容配置见 [本地 stdio](examples/mcp.local.json)、[SSH stdio](examples/mcp.ssh.json)。仍使用 `docker exec -i`，不得使用 `-t`。MCP_PRINCIPAL 是可信 SSH/Docker 接入中的命名空间，不是独立认证。
 

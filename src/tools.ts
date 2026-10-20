@@ -21,6 +21,36 @@ export const definitions: Record<
   string,
   { description: string; schema: z.ZodTypeAny; readOnly?: boolean }
 > = {
+  get_logs: {
+    description:
+      'Query durable, bounded, redacted service/browser/page/operation/recorder/tunnel events. Survives instance closure and manager restart when the data volume is preserved. Only this principal and generic service events are visible. No raw console text, credentials, request bodies or arbitrary file paths. Omit after_seq for recent events; use returned next_after_seq to read newer events.',
+    schema: z
+      .object({
+        instance_id: id.optional(),
+        operation_id: z.string().uuid().optional(),
+        component: z
+          .enum(['service', 'browser', 'page', 'operation', 'recorder', 'tunnel'])
+          .optional(),
+        level: z.enum(['info', 'warn', 'error']).optional(),
+        since: z.string().datetime({ offset: true }).optional(),
+        after_seq: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+        limit: z.number().int().min(1).max(200).default(100),
+      })
+      .strict(),
+    readOnly: true,
+  },
+  inspect_instance: {
+    description:
+      'Inspect a live, busy, crashed or retained historical instance without taking its action lock. Returns exit/close reason, current operation and elapsed time, frame/encoder health, resource metrics and recent warnings. Optional bounded renderer probe does not cancel or retry actions. A timeout or SIGKILL alone does not prove OOM.',
+    schema: z
+      .object({
+        instance_id: id,
+        probe: z.boolean().default(true),
+        timeout_ms: z.number().int().min(100).max(5000).default(1500),
+      })
+      .strict(),
+    readOnly: true,
+  },
   create_share_link: {
     description:
       'Create an expiring public read-only viewer URL for one owned live instance or finalized recording. Anyone with this link can see its content without login; it grants no browser control or access to other resources. Returns URL once. Default 24 hours, maximum 30 days. Requires web mode.',
@@ -210,7 +240,7 @@ export const definitions: Record<
   },
   get_diagnostics: {
     description:
-      'Read bounded redacted navigation/HTTP errors, console categories and downloads. No response bodies or console strings are retained.',
+      'Read bounded redacted navigation/HTTP errors, console categories and downloads for a live or disconnected instance even while busy. Use get_logs and inspect_instance for retained postmortem history. No response bodies or console strings are retained.',
     schema: z.object({ ...instance, limit: z.number().int().min(1).max(300).default(100) }),
     readOnly: true,
   },
