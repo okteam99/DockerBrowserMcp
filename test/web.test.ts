@@ -194,7 +194,20 @@ test('password web portal, BASE_URL prefix, authenticated HTTP MCP, live JPEG an
     assert.ok(captured.includes(Buffer.from([255, 216])), 'Live stream must contain JPEG data');
     abort.abort();
     clearTimeout(liveDeadline);
-    await new Promise((r) => setTimeout(r, 1400));
+    const beforeWait: any = await (await fetch(base + '/api/instances', { headers })).json();
+    const pendingWait = call('wait_for', {
+      ...ids,
+      target: { css: '#never-present' },
+      timeout_ms: 2500,
+    });
+    await new Promise((r) => setTimeout(r, 1500));
+    const duringWait: any = await (await fetch(base + '/api/instances', { headers })).json();
+    assert.ok(
+      duringWait.instances[0].live_frame_at > beforeWait.instances[0].live_frame_at,
+      'Live sampling must continue while Agent waits',
+    );
+    assert.equal((await pendingWait).error.code, 'TIMEOUT');
+
     await call('close_instance', { instance_id: id });
     let history: any[] = [];
     for (let n = 0; n < 20; n++) {

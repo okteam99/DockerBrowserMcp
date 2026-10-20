@@ -217,7 +217,7 @@ export class InstanceRecorder {
   }
   private async capture() {
     const active = this.getPage();
-    if (!active || active.page.isClosed() || active.busy) return;
+    if (!active || active.page.isClosed()) return;
     const cfg = this.store.cfg;
     const raw = await active.page.screenshot({
       type: 'jpeg',
